@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Poly Score",
+  "version": "1.0.25",
+  "description": "MLB score timeline on Polymarket charts for completed games",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://polymarket.com/sports/mlb/*"],
+      "js": [
+        "src/teams.js",
+        "src/mlb-api.js",
+        "src/chart-detector.js",
+        "src/time-align.js",
+        "src/overlay.js",
+        "src/content.js"
+      ],
+      "css": ["src/styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "https://statsapi.mlb.com/*",
+    "https://gamma-api.polymarket.com/*",
+    "https://clob.polymarket.com/*"
+  ]
+}

@@ -1,0 +1,515 @@
+/* Poly Score — modern dark UI matching Polymarket */
+
+.poly-score-markers {
+  position: fixed;
+  pointer-events: none;
+  z-index: 40;
+  overflow: visible;
+}
+
+.poly-score-root {
+  --ps-bg: transparent;
+  --ps-surface: transparent;
+  --ps-border: rgba(255, 255, 255, 0.08);
+  --ps-text: #ffffff;
+  --ps-muted: #9ca3af;
+  --ps-dim: #6b7280;
+  --ps-accent: #3b82f6;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin-top: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--ps-border);
+  z-index: 50;
+  position: relative;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Chart markers overlay ── */
+.ps-markers-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 25;
+  overflow: visible;
+}
+
+.ps-chart-banner {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  background: rgba(8, 10, 18, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  z-index: 30;
+}
+
+.ps-banner-team {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-banner-sep {
+  color: rgba(255, 255, 255, 0.35);
+  font-weight: 300;
+}
+
+.ps-banner-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(148, 163, 184, 0.8);
+  margin-left: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ps-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.ps-marker-line {
+  position: absolute;
+  top: 8%;
+  bottom: 12%;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    var(--marker-color, #6366f1) 15%,
+    var(--marker-color, #6366f1) 85%,
+    transparent 100%
+  );
+  opacity: 0.55;
+  transition: opacity 0.2s, width 0.2s;
+}
+
+.ps-marker-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--marker-color, #6366f1);
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 10px var(--marker-color, #6366f1);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+/* Game start / end boundaries */
+.ps-boundary {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.ps-boundary-hit {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px 12px;
+  pointer-events: auto;
+  cursor: default;
+}
+
+.ps-boundary-line {
+  position: absolute;
+  top: 4%;
+  bottom: 4%;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.ps-boundary-start .ps-boundary-line {
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(52, 211, 153, 0.15) 0px,
+    rgba(52, 211, 153, 0.9) 4px,
+    rgba(52, 211, 153, 0.15) 8px
+  );
+}
+
+.ps-boundary-end .ps-boundary-line {
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(167, 139, 250, 0.15) 0px,
+    rgba(167, 139, 250, 0.9) 4px,
+    rgba(167, 139, 250, 0.15) 8px
+  );
+}
+
+.ps-boundary-label {
+  position: relative;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+  background: rgba(8, 10, 18, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.ps-boundary-tooltip {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.92);
+  opacity: 0;
+  pointer-events: none;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  background: rgba(10, 12, 20, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.ps-boundary-hit:hover .ps-boundary-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) scale(1);
+}
+
+.ps-boundary-start .ps-boundary-label {
+  color: #6ee7b7;
+  border-color: rgba(52, 211, 153, 0.35);
+}
+
+.ps-boundary-end .ps-boundary-label {
+  color: #c4b5fd;
+  border-color: rgba(167, 139, 250, 0.35);
+}
+
+.ps-marker-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) scale(0.92);
+  opacity: 0;
+  pointer-events: none;
+  background: rgba(10, 12, 20, 0.95);
+  border: 1px solid var(--ps-border);
+  border-radius: 8px;
+  padding: 5px 9px;
+  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  transition: opacity 0.18s, transform 0.18s;
+}
+
+.ps-marker-inning {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ps-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ps-marker-score {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ps-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Score panel ── */
+.ps-panel {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+.ps-panel-toggle {
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+
+.ps-panel-toggle:hover .ps-panel-bar {
+  opacity: 0.92;
+}
+
+.ps-panel-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 12px;
+  transition: opacity 0.15s ease;
+}
+
+.ps-panel-toggle[aria-expanded="true"] .ps-panel-bar {
+  border-bottom: 1px solid var(--ps-border);
+  margin-bottom: 0;
+}
+
+.ps-panel-toggle[aria-expanded="false"] .ps-panel-bar {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.ps-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.ps-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ps-badge-final {
+  background: rgba(139, 92, 246, 0.15);
+  color: #c4b5fd;
+}
+
+.ps-scoreboard {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.ps-team-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--team-color);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.ps-team-score {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ps-text);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ps-score-divider {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ps-dim);
+  margin: 0 2px;
+}
+
+.ps-events-pill {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ps-muted);
+}
+
+.ps-chevron {
+  color: var(--ps-dim);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.ps-panel-toggle[aria-expanded="false"] .ps-chevron {
+  transform: rotate(-90deg);
+}
+
+/* Timeline table */
+.ps-panel-body {
+  overflow: hidden;
+  transition: max-height 0.28s ease, opacity 0.2s ease;
+}
+
+.ps-panel-body.ps-collapsed {
+  max-height: 0;
+  opacity: 0;
+}
+
+.ps-timeline-scroll {
+  overflow-y: scroll;
+  overflow-x: hidden;
+  max-height: 220px;
+  padding-right: 6px;
+  margin-right: 0;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  scrollbar-width: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.4) rgba(255, 255, 255, 0.08);
+}
+
+.ps-timeline-rows {
+  padding-right: 8px;
+}
+
+.ps-timeline-header,
+.ps-timeline-row {
+  display: grid;
+  grid-template-columns: 72px 92px 56px 1fr;
+  gap: 16px;
+  padding: 0 2px;
+  align-items: center;
+}
+
+.ps-timeline-header {
+  height: 32px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ps-dim);
+  border-bottom: 1px solid var(--ps-border);
+}
+
+.ps-timeline-row {
+  min-height: 40px;
+  font-size: 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.12s ease;
+}
+
+.ps-timeline-row:last-child {
+  border-bottom: none;
+}
+
+.ps-timeline-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.ps-cell-time {
+  color: var(--ps-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ps-inning-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.ps-cell-score {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--ps-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.ps-cell-detail {
+  color: var(--ps-muted);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* List page — slightly compact */
+.poly-score-root.ps-compact .ps-team-score {
+  font-size: 16px;
+}
+
+.poly-score-root.ps-compact .ps-timeline-scroll {
+  max-height: 160px;
+}
+
+/* Scrollbar — visible draggable thumb on the right */
+.ps-timeline-scroll::-webkit-scrollbar {
+  width: 14px;
+}
+
+.ps-timeline-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 7px;
+  margin: 4px 2px;
+}
+
+.ps-timeline-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 7px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  min-height: 48px;
+}
+
+.ps-timeline-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.42);
+  background-clip: padding-box;
+}
+
+.ps-timeline-scroll::-webkit-scrollbar-thumb:active {
+  background: rgba(255, 255, 255, 0.55);
+  background-clip: padding-box;
+}
+
+/* Entry animation */
+@keyframes ps-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.poly-score-root {
+  animation: ps-fade-in 0.35s ease-out;
+}
