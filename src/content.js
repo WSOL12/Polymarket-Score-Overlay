@@ -18,12 +18,12 @@
   }
 
   async function processChart(target, slug, timeline, options = {}) {
-    const { root, plot, anchor, sectionType, section } = target;
+    const { root, plot, anchor, sectionType, section, card, listEntry } = target;
     const chartType = sectionType || "main";
     const slugKey = options.slugKey || slugKeyFrom(slug);
 
     if (!slug || !timeline || !plot) return;
-    if (isPlotAttached(plot, chartType)) return;
+    if (isPlotAttached(plot, chartType, slugKey)) return;
 
     const key = `${slugKey}-${chartType}`;
     if (pending.has(key)) return;
@@ -37,6 +37,8 @@
         plot,
         anchor,
         section,
+        card,
+        listEntry,
         sectionType: chartType,
         showPanel: options.showPanel !== false,
       });
@@ -62,7 +64,7 @@
 
     for (const target of targets) {
       const chartType = target.sectionType || "main";
-      if (isPlotAttached(target.plot, chartType)) continue;
+      if (isPlotAttached(target.plot, chartType, slugKey)) continue;
 
       await processChart(target, slug, timeline, {
         slug,
@@ -76,23 +78,40 @@
   }
 
   async function scanListPage() {
-    for (const card of findGameCards()) {
-      const slug = extractSlugFromCard(card);
+    const usedPlots = new Set();
+    const entries = findListGameEntries().sort((a, b) => {
+      const aOpen = isListAccordionOpen(a.panel, a.headerCard) ? 1 : 0;
+      const bOpen = isListAccordionOpen(b.panel, b.headerCard) ? 1 : 0;
+      return bOpen - aOpen;
+    });
+
+    for (const entry of entries) {
+      const { slug } = entry;
       if (!slug) continue;
 
       const timeline = await getTimeline(slug);
       if (!timeline) continue;
 
       const slugKey = slugKeyFrom(slug);
-      const charts = findChartsInElement(card).filter((c) => !isChartAttached(c));
-      if (!charts.length) continue;
+      const chart = findListChartForGame(entry);
+      if (!chart || usedPlots.has(chart.plot)) continue;
+      if (isPlotAttached(chart.plot, "main", slugKey)) {
+        usedPlots.add(chart.plot);
+        continue;
+      }
 
-      const primary = pickPrimaryChart(charts);
-      const plot = getPlotArea(primary);
-      if (!plot || isPlotAttached(plot)) continue;
+      usedPlots.add(chart.plot);
 
       await processChart(
-        { root: primary, plot, anchor: primary, sectionType: "main" },
+        {
+          root: chart.root,
+          plot: chart.plot,
+          anchor: chart.anchor,
+          sectionType: "main",
+          section: entry.panel || entry.headerCard,
+          card: entry.headerCard,
+          listEntry: entry,
+        },
         slug,
         timeline,
         {
@@ -100,9 +119,12 @@
           slugKey,
           showPanel: true,
           compact: true,
+          listEntry: entry,
         }
       );
     }
+
+    syncPanelVisibility?.();
   }
 
   async function scan() {
@@ -176,6 +198,63 @@
     relayoutMarkers();
   }
 
+  function isListPageChartClick(el) {
+    if (!el) return false;
+    const text = (el.textContent || "").trim();
+    if (/^Graph$/i.test(text)) return true;
+    if (/view finished/i.test(text)) return true;
+    if (TIMEFRAMES.has(text.toUpperCase())) return true;
+    if (el.closest('a[href*="/sports/mlb/mlb-"]')) return true;
+    if (/\bFINAL\b/i.test(text) && text.length < 24) return true;
+    return false;
+  }
+
+  function clickInsideGameCard(el) {
+    if (el.closest('[id^="sports-accordion-item-mlb-"]')) return true;
+    let node = el;
+    for (let i = 0; i < 16 && node; i++) {
+      if (extractSlugFromCard(node)) return true;
+      node = node.parentElement;
+    }
+    return false;
+  }
+
+  function onListPageInteraction() {
+    invalidateChartCache();
+    scheduleScanBurst([50, 250, 700, 1500, 3000]);
+    relayoutMarkers();
+  }
+
+  function watchListAccordions() {
+    if (watchListAccordions._on) return;
+    watchListAccordions._on = true;
+
+    let syncTimer = 0;
+    const observer = new MutationObserver((mutations) => {
+      if (getPageType() !== "list") return;
+      const relevant = mutations.some(
+        (m) =>
+          m.target?.id?.startsWith?.("sports-accordion-item-mlb-") ||
+          (m.type === "attributes" &&
+            (m.attributeName === "data-state" || m.attributeName === "hidden"))
+      );
+      if (!relevant) return;
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        invalidateChartCache();
+        syncPanelVisibility?.();
+        scheduleScanBurst([50, 300, 900]);
+      }, 60);
+    });
+
+    observer.observe(document.body, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-state", "hidden", "style", "class"],
+      childList: true,
+    });
+  }
+
   function relayoutMarkers() {
     relayoutAllMarkers?.(true);
     setTimeout(() => relayoutAllMarkers?.(true), 400);
@@ -246,10 +325,29 @@
     onNavigation();
   }
 
+  watchListAccordions();
+
   setTimeout(scan, 2000);
 
   setInterval(() => {
-    if (getPageType() !== "game") return;
+    const pageType = getPageType();
+    if (pageType === "list") {
+      syncPanelVisibility?.();
+      if (scanRunning) return;
+      const entries = findListGameEntries();
+      if (
+        entries.some((entry) => {
+          const chart = findListChartForGame(entry);
+          if (!chart) return false;
+          return !isPlotAttached(chart.plot, "main", slugKeyFrom(entry.slug));
+        })
+      ) {
+        scan();
+      }
+      return;
+    }
+
+    if (pageType !== "game") return;
     syncPanelVisibility?.();
     if (scanRunning) return;
     invalidateChartCache();
@@ -258,7 +356,12 @@
       targets.some((t) => {
         const type =
           t.sectionType || detectChartTypeFromPlot(t.plot) || "main";
-        return t.plot?.isConnected && !isPlotAttached(t.plot, type);
+        const slug = extractSlugFromPage();
+        const slugKey = slug ? slugKeyFrom(slug) : null;
+        return (
+          t.plot?.isConnected &&
+          !isPlotAttached(t.plot, type, slugKey)
+        );
       })
     ) {
       scan();
@@ -268,7 +371,19 @@
   document.addEventListener(
     "click",
     (e) => {
-      if (getPageType() !== "game") return;
+      const pageType = getPageType();
+
+      if (pageType === "list") {
+        const el = e.target.closest(
+          "button, [role='button'], a, span, div"
+        );
+        if (el && (isListPageChartClick(el) || clickInsideGameCard(el))) {
+          onListPageInteraction();
+        }
+        return;
+      }
+
+      if (pageType !== "game") return;
       const el = e.target.closest(
         "button, [role='button'], summary, h3, h4, a, span"
       );

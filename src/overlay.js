@@ -80,6 +80,25 @@ function placePanel(panel, anchor, section) {
   insertAfter.insertAdjacentElement("afterend", panel);
 }
 
+function placeListPanel(panel, anchor, listEntry) {
+  if (!panel) return;
+
+  let insertAfter = null;
+  const chartRoot = anchor?.closest?.("[class*='chart']") || anchor;
+
+  if (listEntry?.panel?.isConnected && isListAccordionOpen(listEntry.panel, listEntry.headerCard)) {
+    insertAfter = listEntry.panel;
+  } else if (chartRoot?.isConnected) {
+    insertAfter = findPanelInsertAfter(chartRoot, listEntry?.headerCard);
+  } else {
+    insertAfter = findPanelInsertAfter(anchor, listEntry?.headerCard);
+  }
+
+  if (!insertAfter?.isConnected) return;
+  if (panel.previousElementSibling === insertAfter) return;
+  insertAfter.insertAdjacentElement("afterend", panel);
+}
+
 function teamDisplayName(team) {
   return TEAM_NAMES[team.abbr] || team.name || team.abbr.toUpperCase();
 }
@@ -103,6 +122,11 @@ function updatePanelColors(panel, chartColors, timeline) {
 }
 
 function syncPanelVisibility() {
+  if (getPageType?.() === "list") {
+    syncListPanelVisibility();
+    return;
+  }
+
   invalidateChartCache?.();
   const targets = findChartTargets?.() || [];
   const visibleByType = new Map();
@@ -145,6 +169,39 @@ function syncPanelVisibility() {
       });
     }
   }
+}
+
+function syncListPanelVisibility() {
+  for (const [, data] of attached) {
+    const visible = isListGameVisible(data.plot, data.chartRoot, data.listEntry);
+
+    if (data.panel?.isConnected) {
+      data.panel.style.display = visible ? "" : "none";
+    }
+
+    if (data.markers?.isConnected) {
+      data.markers._sectionHidden = !visible;
+      if (!visible) {
+        data.markers.style.display = "none";
+      } else {
+        layoutMarkers(data.chartRoot, data.markers, {
+          plot: data.plot,
+          section: data.listEntry?.panel || data.card || data.section,
+        });
+      }
+    }
+  }
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key]`).forEach((panel) => {
+    const slugKey = panel.dataset.slugKey;
+    let visible = false;
+    for (const [, data] of attached) {
+      if (data.slugKey !== slugKey) continue;
+      visible = isListGameVisible(data.plot, data.chartRoot, data.listEntry);
+      break;
+    }
+    panel.style.display = visible ? "" : "none";
+  });
 }
 
 const MARKET_SECTION_TYPES = ["moneyline", "spread", "total", "main"];
@@ -467,7 +524,7 @@ function pickPrimaryChart(charts) {
   })[0];
 }
 
-function isPlotAttached(plot, sectionType = null) {
+function isPlotAttached(plot, sectionType = null, slugKey = null) {
   if (!plot?.isConnected) return false;
 
   const chartType = sectionType || detectChartTypeFromPlot(plot);
@@ -476,18 +533,20 @@ function isPlotAttached(plot, sectionType = null) {
     if (
       data.plot === plot &&
       data.chartType === chartType &&
+      (!slugKey || data.slugKey === slugKey) &&
       data.markers?.isConnected
     ) {
       return true;
     }
   }
 
-  const stableKey = plotStableKey(plot, chartType);
+  const stableKey = plotStableKey(plot, chartType, slugKey);
   const data = attached.get(stableKey);
   return Boolean(
     data?.markers?.isConnected &&
       data.plot === plot &&
-      data.chartType === chartType
+      data.chartType === chartType &&
+      (!slugKey || data.slugKey === slugKey)
   );
 }
 
@@ -504,12 +563,12 @@ async function attachToChart(chartRoot, timeline, options = {}) {
     options.sectionType ||
     detectChartTypeFromPlot(plot) ||
     detectChartType(chartRoot, options.sectionType);
-  const stableKey = plotStableKey(plot, chartType);
+  const stableKey = plotStableKey(plot, chartType, options.slugKey);
   if (!stableKey || !options.slugKey) return;
 
   const sectionLock = `${options.slugKey}-${chartType}`;
   if (attachingSections.has(sectionLock)) return;
-  if (isPlotAttached(plot, chartType)) return;
+  if (isPlotAttached(plot, chartType, options.slugKey)) return;
 
   attachingSections.add(sectionLock);
 
@@ -532,6 +591,8 @@ async function attachToChart(chartRoot, timeline, options = {}) {
 
     const anchor = options.anchor || chartRoot;
     const section = options.section || null;
+    const card = options.card || null;
+    const listEntry = options.listEntry || null;
 
     const chartColors = extractChartTeamColors(chartRoot, timeline.game, chartType);
     const markers = buildMarkersLayer(timeline, alignment, chartColors);
@@ -553,15 +614,24 @@ async function attachToChart(chartRoot, timeline, options = {}) {
         panel.dataset.slugKey = options.slugKey;
         panel.dataset.panelKey = panelKey;
         panel.dataset.chartType = chartType;
+        if (options.compact) panel.classList.add("ps-compact");
       } else {
         updatePanelColors(panel, chartColors, timeline);
       }
 
       pagePanels.set(panelKey, panel);
-      placePanel(panel, anchor, section);
+      if (listEntry) {
+        placeListPanel(panel, anchor, listEntry);
+      } else {
+        placePanel(panel, anchor, card || section);
+      }
     }
 
-    layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section });
+    layoutMarkers(chartRoot, markers, {
+      refreshAxis: true,
+      plot,
+      section: listEntry?.panel || card || section,
+    });
     attached.set(stableKey, {
       markers,
       panel,
@@ -569,15 +639,28 @@ async function attachToChart(chartRoot, timeline, options = {}) {
       plot,
       chartType,
       section,
+      card,
+      listEntry,
+      slugKey: options.slugKey,
     });
     syncPanelVisibility();
 
     setTimeout(
-      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section }),
+      () =>
+        layoutMarkers(chartRoot, markers, {
+          refreshAxis: true,
+          plot,
+          section: card || section,
+        }),
       800
     );
     setTimeout(
-      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section }),
+      () =>
+        layoutMarkers(chartRoot, markers, {
+          refreshAxis: true,
+          plot,
+          section: card || section,
+        }),
       2500
     );
   } finally {

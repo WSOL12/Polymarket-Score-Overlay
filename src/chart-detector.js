@@ -7,7 +7,7 @@ const PROCESSED_ATTR = "data-poly-score-id";
 const plotByRoot = new WeakMap();
 const chartRootsCache = { roots: null, targets: null };
 
-function hasChartSignals(el) {
+function hasChartSignals(el, minMarkers = 2) {
   if (!el) return false;
   const found = new Set();
   for (const node of el.querySelectorAll("button, [role='button'], span, div, a")) {
@@ -15,10 +15,65 @@ function hasChartSignals(el) {
     if (!t || t.length > 6) continue;
     if (CHART_MARKERS.includes(t)) {
       found.add(t);
-      if (found.size >= 2) return true;
+      if (found.size >= minMarkers) return true;
     }
   }
-  return false;
+  return minMarkers <= 1 && found.size >= 1;
+}
+
+function isLikelyChartCanvas(canvas) {
+  if (!canvas?.isConnected || !isVisiblePlot(canvas)) return false;
+
+  let node = canvas.parentElement;
+  for (let i = 0; i < 12 && node; i++) {
+    if (hasChartSignals(node, 1)) return true;
+    const sample = (node.textContent || "").slice(0, 600);
+    if (/Graph/i.test(sample) && /(1H|6H|1D|1W|1M|ALL)/.test(sample)) return true;
+    node = node.parentElement;
+  }
+
+  const r = canvas.getBoundingClientRect();
+  return r.width >= 160 && r.height >= 45;
+}
+
+function findChartRootFromCanvas(canvas) {
+  let node = canvas.parentElement;
+  for (let i = 0; i < 14 && node; i++) {
+    if (hasChartSignals(node, 1)) return node;
+    const sample = (node.textContent || "").slice(0, 400);
+    if (/Graph/i.test(sample) && /Vol/i.test(sample)) return node;
+    node = node.parentElement;
+  }
+  return canvas.parentElement || canvas;
+}
+
+function collectVisibleChartSurfaces() {
+  const seen = new Set();
+  const surfaces = [];
+
+  const add = (plot, root) => {
+    if (!plot || !root || seen.has(plot)) return;
+    if (!isVisiblePlot(plot)) return;
+    seen.add(plot);
+    registerChartRoot(root, plot);
+    surfaces.push({
+      plot,
+      root,
+      anchor: findPanelAnchor(plot, root),
+    });
+  };
+
+  for (const rect of document.querySelectorAll("svg rect, rect")) {
+    if (!isGraphPlotRect(rect)) continue;
+    add(rect, findChartRootFromPlotRect(rect));
+  }
+
+  for (const canvas of document.querySelectorAll("canvas")) {
+    if (!isLikelyChartCanvas(canvas)) continue;
+    add(canvas, findChartRootFromCanvas(canvas));
+  }
+
+  return surfaces;
 }
 
 function isTransparentPlotFill(el) {
@@ -32,18 +87,19 @@ function isGraphPlotRect(el) {
 
   const x = parseFloat(el.getAttribute("x") || "0");
   const y = parseFloat(el.getAttribute("y") || "0");
-  if (x !== 0 || y !== 0) return false;
-
   const w = parseFloat(el.getAttribute("width") || "0");
   const h = parseFloat(el.getAttribute("height") || "0");
 
-  return w >= 280 && h >= 70 && h <= 420;
+  if (x === 0 && y === 0 && w >= 280 && h >= 70 && h <= 420) return true;
+
+  const r = el.getBoundingClientRect();
+  return r.width >= 200 && r.height >= 50 && r.height <= 480;
 }
 
 function isVisiblePlot(el) {
   if (!el?.isConnected) return false;
   const r = el.getBoundingClientRect();
-  return r.width >= 180 && r.height >= 45;
+  return r.width >= 120 && r.height >= 35;
 }
 
 function findAllPlotRects() {
@@ -213,7 +269,7 @@ function findPanelInsertAfter(anchor, section) {
   return anchor;
 }
 
-function plotStableKey(plot, sectionType = null) {
+function plotStableKey(plot, sectionType = null, slugKey = null) {
   if (!plot) return null;
   const type = sectionType || detectChartTypeFromPlot(plot);
   const w =
@@ -222,7 +278,8 @@ function plotStableKey(plot, sectionType = null) {
   const h =
     plot.getAttribute("height") ||
     String(Math.round(plot.getBoundingClientRect().height));
-  return `${type}-${w}x${h}`;
+  const sizeKey = `${type}-${w}x${h}`;
+  return slugKey ? `${slugKey}-${sizeKey}` : sizeKey;
 }
 
 function detectChartTypeFromPlot(plot) {
@@ -401,7 +458,16 @@ function getCanvas(chartRoot) {
 
 /** Plot area used for marker positioning — prefers SVG transparent rect */
 function getPlotArea(chartRoot) {
-  return getPlotRect(chartRoot) || getCanvas(chartRoot);
+  const rect = getPlotRect(chartRoot);
+  const canvas = getCanvas(chartRoot);
+  if (!canvas?.isConnected) return rect;
+  if (!rect?.isConnected) return canvas;
+
+  const rRect = rect.getBoundingClientRect();
+  const rCanvas = canvas.getBoundingClientRect();
+  return rCanvas.width * rCanvas.height > rRect.width * rRect.height
+    ? canvas
+    : rect;
 }
 
 function extractSlugFromCard(card) {
@@ -419,35 +485,193 @@ function extractSlugFromPage() {
 }
 
 function findGameCards() {
-  const cards = new Set();
-  const links = document.querySelectorAll('a[href*="/sports/mlb/mlb-"]');
+  return findListGameEntries().map((entry) => entry.headerCard);
+}
 
-  for (const link of links) {
+function findAccordionPanel(fullSlug, headerCard) {
+  let panel = document.getElementById(`sports-accordion-item-${fullSlug}`);
+  if (panel) return panel;
+
+  let node = headerCard;
+  for (let i = 0; i < 12 && node; i++) {
+    panel = node.querySelector?.(`#sports-accordion-item-${fullSlug}`);
+    if (panel) return panel;
+    if (node.nextElementSibling?.id === `sports-accordion-item-${fullSlug}`) {
+      return node.nextElementSibling;
+    }
+    node = node.parentElement;
+  }
+
+  return null;
+}
+
+function isListAccordionOpen(panel, headerCard) {
+  if (panel?.isConnected) {
+    if (panel.getAttribute("data-state") === "closed") return false;
+    const r = panel.getBoundingClientRect();
+    return r.height > 40 && r.width > 80;
+  }
+
+  if (!headerCard?.isConnected) return false;
+  const near = findChartNearEntry({ headerCard, panel: null });
+  return Boolean(near);
+}
+
+function findListGameEntries() {
+  const bySlug = new Map();
+
+  for (const link of document.querySelectorAll('a[href*="/sports/mlb/mlb-"]')) {
     const href = link.href || link.getAttribute("href") || "";
-    const m = href.match(/mlb-[a-z]+-[a-z]+-\d{4}-\d{2}-\d{2}/);
-    if (!m) continue;
+    const m = href.match(/(mlb-[a-z]+-[a-z]+-\d{4}-\d{2}-\d{2})/);
+    if (!m || bySlug.has(m[1])) continue;
 
-    let card = link.parentElement;
-    for (let i = 0; i < 18 && card; i++) {
-      const text = card.textContent || "";
-      if (text.includes("Vol") && text.length < 8000) {
-        cards.add(card);
-        break;
+    const slug = parseGameSlug(m[1]);
+    if (!slug) continue;
+
+    let headerCard = link.closest('[class*="rounded-xl"]') || link.parentElement;
+    for (let i = 0; i < 16 && headerCard; i++) {
+      const text = headerCard.textContent || "";
+      if (text.length > 8000) {
+        headerCard = headerCard.parentElement;
+        continue;
       }
-      card = card.parentElement;
+      if (text.includes("Vol") || /\bFINAL\b/i.test(text)) break;
+      headerCard = headerCard.parentElement;
+    }
+
+    const card = headerCard || link.parentElement;
+    bySlug.set(m[1], {
+      slug,
+      fullSlug: m[1],
+      headerCard: card,
+      panel: findAccordionPanel(m[1], card),
+    });
+  }
+
+  return [...bySlug.values()];
+}
+
+function findChartNearEntry(entry) {
+  const header = entry?.headerCard;
+  if (!header?.isConnected) return null;
+
+  const headerRect = header.getBoundingClientRect();
+  if (headerRect.height < 1) return null;
+
+  const centerX = headerRect.left + headerRect.width / 2;
+  const minY = headerRect.top - 30;
+  const maxY = headerRect.bottom + 1400;
+
+  let best = null;
+  let bestScore = Infinity;
+
+  for (const surface of collectVisibleChartSurfaces()) {
+    const r = surface.plot.getBoundingClientRect();
+    if (r.bottom < minY || r.top > maxY) continue;
+
+    const plotCenterX = r.left + r.width / 2;
+    const dx = Math.abs(plotCenterX - centerX);
+    const dy =
+      r.top >= headerRect.top
+        ? r.top - headerRect.top
+        : headerRect.bottom - r.bottom + 200;
+    const score = dy + dx * 0.35;
+
+    if (score < bestScore) {
+      bestScore = score;
+      best = surface;
     }
   }
 
-  return [...cards];
+  if (!best || bestScore > 1100) return null;
+  return best;
+}
+
+function findListChartInContainer(container) {
+  const charts = findChartsInElement(container);
+  if (!charts.length) return null;
+
+  const root = charts.sort((a, b) => {
+    const pa = getPlotArea(a);
+    const pb = getPlotArea(b);
+    const ra = pa?.getBoundingClientRect() || { width: 0, height: 0 };
+    const rb = pb?.getBoundingClientRect() || { width: 0, height: 0 };
+    return rb.width * rb.height - ra.width * ra.height;
+  })[0];
+  const plot = getPlotArea(root);
+  if (!plot || !isVisiblePlot(plot)) return null;
+
+  return { root, plot, anchor: findPanelAnchor(plot, root) };
+}
+
+function findListChartForGame(entry) {
+  if (!entry?.headerCard?.isConnected) return null;
+
+  if (entry.panel?.isConnected && entry.panel.getAttribute("data-state") === "closed") {
+    return null;
+  }
+
+  const wrappers = [
+    entry.panel,
+    entry.headerCard,
+    entry.headerCard.parentElement,
+    entry.headerCard.parentElement?.parentElement,
+  ].filter(Boolean);
+
+  for (const container of wrappers) {
+    if (!container?.isConnected) continue;
+    const chart = findListChartInContainer(container);
+    if (chart) {
+      return {
+        ...chart,
+        card: entry.headerCard,
+        panel: entry.panel,
+        entry,
+      };
+    }
+  }
+
+  const near = findChartNearEntry(entry);
+  if (near) {
+    return {
+      ...near,
+      card: entry.headerCard,
+      panel: entry.panel,
+      entry,
+    };
+  }
+
+  return null;
+}
+
+function isListGameVisible(plot, chartRoot, entry) {
+  if (!plot?.isConnected) return false;
+
+  const r = plot.getBoundingClientRect();
+  if (r.width < 80 || r.height < 35) return false;
+
+  if (entry?.panel?.isConnected && !isListAccordionOpen(entry.panel, entry.headerCard)) {
+    return false;
+  }
+
+  let node = plot;
+  for (let i = 0; i < 20 && node; i++) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    node = node.parentElement;
+  }
+
+  return true;
 }
 
 function findChartsInElement(container) {
   const roots = new Set();
 
   for (const plotRect of container.querySelectorAll("rect")) {
-    if (!isGraphPlotRect(plotRect)) continue;
+    if (!isGraphPlotRect(plotRect) || !isVisiblePlot(plotRect)) continue;
     const root = findChartRootFromPlotRect(plotRect);
-    if (root && container.contains(root)) {
+    if (root && container.contains(plotRect)) {
       registerChartRoot(root, plotRect);
       roots.add(root);
     }
@@ -455,18 +679,22 @@ function findChartsInElement(container) {
 
   if (roots.size === 0) {
     for (const canvas of container.querySelectorAll("canvas")) {
-      let node = canvas.parentElement;
-      for (let i = 0; i < 12 && node; i++) {
-        if (hasChartSignals(node) && container.contains(node)) {
-          roots.add(node);
-          break;
-        }
-        node = node.parentElement;
+      if (!isLikelyChartCanvas(canvas)) continue;
+      const root = findChartRootFromCanvas(canvas);
+      if (root) {
+        registerChartRoot(root, canvas);
+        roots.add(root);
       }
     }
   }
 
   return [...roots];
+}
+
+function findListChartInCard(card) {
+  const chart = findListChartInContainer(card);
+  if (!chart) return null;
+  return { ...chart, card };
 }
 
 function getPageType() {
@@ -791,6 +1019,14 @@ window.PolyScoreChart = {
   findPanelInsertAfter,
   findSectionForPlot,
   findChartsInElement,
+  findListChartInCard,
+  findListGameEntries,
+  findListChartForGame,
+  findChartNearEntry,
+  collectVisibleChartSurfaces,
+  isListGameVisible,
+  isListAccordionOpen,
+  findAccordionPanel,
   getCanvas,
   getPlotArea,
   getPlotRect,
@@ -815,6 +1051,14 @@ Object.assign(window, {
   findPanelInsertAfter,
   findSectionForPlot,
   findChartsInElement,
+  findListChartInCard,
+  findListGameEntries,
+  findListChartForGame,
+  findChartNearEntry,
+  collectVisibleChartSurfaces,
+  isListGameVisible,
+  isListAccordionOpen,
+  findAccordionPanel,
   getCanvas,
   getPlotArea,
   getPlotRect,

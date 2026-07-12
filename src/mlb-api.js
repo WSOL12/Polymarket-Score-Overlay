@@ -24,7 +24,13 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function findGame(awayAbbr, homeAbbr, date) {
+function shiftIsoDate(dateStr, dayOffset) {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dayOffset);
+  return d.toISOString().slice(0, 10);
+}
+
+async function findGameOnDate(awayAbbr, homeAbbr, date) {
   const key = `${awayAbbr}-${homeAbbr}-${date}`;
   if (gameCache.has(key)) return gameCache.get(key);
 
@@ -66,6 +72,30 @@ async function findGame(awayAbbr, homeAbbr, date) {
 
   gameCache.set(key, result);
   return result;
+}
+
+async function findGame(awayAbbr, homeAbbr, date) {
+  const cacheKey = `${awayAbbr}-${homeAbbr}-${date}`;
+  const cached = gameCache.get(cacheKey);
+  if (cached?.isFinal) return cached;
+
+  const datesToTry = [date];
+  for (let i = 1; i <= 3; i++) datesToTry.push(shiftIsoDate(date, -i));
+  datesToTry.push(shiftIsoDate(date, 1));
+
+  let fallback = cached || null;
+  for (const d of datesToTry) {
+    const game = await findGameOnDate(awayAbbr, homeAbbr, d);
+    if (!game) continue;
+    if (game.isFinal) {
+      gameCache.set(cacheKey, game);
+      return game;
+    }
+    if (!fallback) fallback = game;
+  }
+
+  if (fallback) gameCache.set(cacheKey, fallback);
+  return fallback;
 }
 
 function extractScoringPlays(feed, awayAbbr, homeAbbr) {
