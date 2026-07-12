@@ -47,16 +47,12 @@
     const unattached = charts.filter((c) => !isChartAttached(c));
     if (!unattached.length) return;
 
-    const primary = pickPrimaryChart(charts);
-    const hasPanel = Boolean(
-      document.querySelector(`.poly-score-root[data-slug-key="${slugKey}"]`)
-    );
-
     for (const chart of unattached) {
       await processChart(chart, slug, timeline, {
         slug,
         slugKey,
-        showPanel: chart === primary && !hasPanel,
+        panelKey: panelKeyFor(slugKey, chart),
+        showPanel: true,
       });
     }
   }
@@ -126,6 +122,7 @@
       lastPath = path;
       timelineCache.clear();
       cleanupOrphans();
+      resetPagePanels?.();
       invalidateChartCache();
     }
     scheduleScan(1200);
@@ -154,7 +151,8 @@
 
       if (/Spread|Total|Moneyline/i.test(text)) {
         invalidateChartCache();
-        scheduleScan(1200);
+        scheduleScan(400);
+        setTimeout(() => scheduleScan(1200), 1200);
         relayoutMarkers();
       }
     },

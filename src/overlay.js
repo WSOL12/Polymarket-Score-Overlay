@@ -27,11 +27,12 @@ function slugKeyFrom(slug) {
 
 function chartFingerprint(chartRoot) {
   const plot = getPlotArea(chartRoot);
-  if (!plot) return `chart-${overlaySeq}`;
+  if (!plot) return `chart-${++overlaySeq}`;
   const w = plot.getAttribute("width");
   const h = plot.getAttribute("height");
   const type = detectChartType(chartRoot);
-  return `${type}-${w}x${h}`;
+  const r = plot.getBoundingClientRect();
+  return `${type}-${Math.round(r.top)}-${Math.round(r.left)}-${w}x${h}`;
 }
 
 function teamDisplayName(team) {
@@ -244,15 +245,19 @@ function detachChart(chartRoot) {
   attached.delete(chartRoot);
 }
 
-function removeDuplicatePanels(keepKey) {
-  document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach((el) => {
-    if (el.dataset.slugKey !== keepKey) el.remove();
-  });
+function panelKeyFor(slugKey, chartRoot) {
+  return `${slugKey}-${chartFingerprint(chartRoot)}`;
+}
 
-  for (const [key, panel] of pagePanels) {
-    if (key !== keepKey && panel.isConnected) panel.remove();
-    if (key !== keepKey) pagePanels.delete(key);
-  }
+function removePanel(panelKey) {
+  const panel = pagePanels.get(panelKey);
+  if (panel?.isConnected) panel.remove();
+  pagePanels.delete(panelKey);
+}
+
+function resetPagePanels() {
+  document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach((el) => el.remove());
+  pagePanels.clear();
 }
 
 function cleanupOrphans() {
@@ -302,15 +307,17 @@ async function attachToChart(chartRoot, timeline, options = {}) {
   ensureGlobalListeners();
 
   let panel = null;
-  if (options.showPanel && options.slugKey) {
-    removeDuplicatePanels(options.slugKey);
+  const panelKey =
+    options.panelKey ||
+    (options.slugKey ? panelKeyFor(options.slugKey, chartRoot) : null);
 
-    panel = pagePanels.get(options.slugKey);
-    if (panel?.isConnected) panel.remove();
+  if (options.showPanel && panelKey) {
+    removePanel(panelKey);
 
     panel = buildPanel(timeline, chartColors);
     panel.dataset.slugKey = options.slugKey;
-    pagePanels.set(options.slugKey, panel);
+    panel.dataset.panelKey = panelKey;
+    pagePanels.set(panelKey, panel);
 
     chartRoot.insertAdjacentElement("afterend", panel);
   }
@@ -332,6 +339,8 @@ window.layoutAllMarkers = layoutAllMarkers;
 window.PolyScoreOverlay = { attachToChart, detachChart, pickPrimaryChart };
 window.attachToChart = attachToChart;
 window.cleanupOrphans = cleanupOrphans;
+window.resetPagePanels = resetPagePanels;
 window.chartFingerprint = chartFingerprint;
 window.pickPrimaryChart = pickPrimaryChart;
 window.slugKeyFrom = slugKeyFrom;
+window.panelKeyFor = panelKeyFor;
