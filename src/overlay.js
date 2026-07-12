@@ -5,6 +5,7 @@ const OVERLAY_CLASS = "poly-score-root";
 const MARKERS_CLASS = "poly-score-markers";
 const attached = new Map();
 const pagePanels = new Map();
+const attachingSections = new Set();
 
 let overlaySeq = 0;
 let scrollRaf = 0;
@@ -25,14 +26,57 @@ function slugKeyFrom(slug) {
   return `${slug.away}-${slug.home}-${slug.date}`;
 }
 
-function chartFingerprint(chartRoot) {
-  const plot = getPlotArea(chartRoot);
-  if (!plot) return `chart-${++overlaySeq}`;
-  const w = plot.getAttribute("width");
-  const h = plot.getAttribute("height");
-  const type = detectChartType(chartRoot);
-  const r = plot.getBoundingClientRect();
-  return `${type}-${Math.round(r.top)}-${Math.round(r.left)}-${w}x${h}`;
+function chartFingerprint(chartRoot, plot = null, sectionType = null) {
+  const area = plot || getPlotArea(chartRoot);
+  if (!area) return `chart-${++overlaySeq}`;
+  return plotStableKey(area, sectionType || detectChartType(chartRoot, sectionType));
+}
+
+function panelKeyFor(slugKey, chartRoot, plot = null, sectionType = null) {
+  const type =
+    sectionType || detectChartType(chartRoot, sectionType) || "main";
+  return `${slugKey}-${type}`;
+}
+
+function removePanelsForSection(slugKey, chartType) {
+  const panels = [
+    ...document.querySelectorAll(
+      `.${OVERLAY_CLASS}[data-slug-key="${slugKey}"][data-chart-type="${chartType}"]`
+    ),
+  ];
+
+  for (let i = 1; i < panels.length; i++) panels[i].remove();
+
+  for (const [key, panel] of pagePanels) {
+    if (key === `${slugKey}-${chartType}` && panel && !panel.isConnected) {
+      pagePanels.delete(key);
+    }
+  }
+
+  return panels[0] || null;
+}
+
+function dedupePagePanels(slugKey) {
+  const keepers = new Map();
+  document
+    .querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key="${slugKey}"]`)
+    .forEach((panel) => {
+      const type = panel.dataset.chartType || "main";
+      if (!keepers.has(type)) keepers.set(type, panel);
+      else panel.remove();
+    });
+}
+
+function getSectionPanel(slugKey, chartType) {
+  return document.querySelector(
+    `.${OVERLAY_CLASS}[data-slug-key="${slugKey}"][data-chart-type="${chartType}"]`
+  );
+}
+
+function placePanel(panel, anchor) {
+  if (!panel || !anchor) return;
+  if (panel.previousElementSibling === anchor) return;
+  anchor.insertAdjacentElement("afterend", panel);
 }
 
 function teamDisplayName(team) {
@@ -183,7 +227,13 @@ function refreshMarkerPositions(markersLayer) {
 }
 
 function layoutMarkers(chartRoot, markersLayer, options = {}) {
-  const plot = markersLayer._alignment?.layoutEl || getLayoutElement(chartRoot) || getPlotArea(chartRoot);
+  const plot =
+    options.plot ||
+    markersLayer._plot ||
+    markersLayer._alignment?.plot ||
+    markersLayer._alignment?.layoutEl ||
+    getLayoutElement(chartRoot) ||
+    getPlotArea(chartRoot);
   if (!plot || !markersLayer?.isConnected) return;
 
   const plotR = plot.getBoundingClientRect();
@@ -206,9 +256,12 @@ function layoutMarkers(chartRoot, markersLayer, options = {}) {
 }
 
 function layoutAllMarkers(refreshAxis = false) {
-  for (const [chartRoot, data] of attached) {
+  for (const [, data] of attached) {
     if (data.markers?.isConnected) {
-      layoutMarkers(chartRoot, data.markers, { refreshAxis });
+      layoutMarkers(data.chartRoot, data.markers, {
+        refreshAxis,
+        plot: data.plot,
+      });
     }
   }
 }
@@ -238,15 +291,18 @@ function ensureGlobalListeners() {
   window.addEventListener("scroll", onScrollOrResize, { passive: true, capture: true });
 }
 
-function detachChart(chartRoot) {
-  const data = attached.get(chartRoot);
+function detachPlot(stableKey) {
+  const data = attached.get(stableKey);
   if (!data) return;
   data.markers?.remove();
-  attached.delete(chartRoot);
+  attached.delete(stableKey);
 }
 
-function panelKeyFor(slugKey, chartRoot) {
-  return `${slugKey}-${chartFingerprint(chartRoot)}`;
+function detachChart(chartRoot) {
+  const plot = getPlotArea(chartRoot);
+  if (!plot) return;
+  const stableKey = plotStableKey(plot, detectChartTypeFromPlot(plot));
+  if (stableKey) detachPlot(stableKey);
 }
 
 function removePanel(panelKey) {
@@ -261,16 +317,25 @@ function resetPagePanels() {
 }
 
 function cleanupOrphans() {
-  for (const [chartRoot, data] of attached) {
-    if (!chartRoot.isConnected || !data.markers?.isConnected) {
+  for (const [plotKey, data] of attached) {
+    if (
+      !data.plot?.isConnected ||
+      !data.chartRoot?.isConnected ||
+      !data.markers?.isConnected
+    ) {
       data.markers?.remove();
-      attached.delete(chartRoot);
+      attached.delete(plotKey);
     }
   }
 
   document.querySelectorAll(`.${MARKERS_CLASS}`).forEach((el) => {
-    if (!attached.has(el._chartRoot)) el.remove();
+    const key = el._plotKey;
+    if (!key || !attached.has(key)) el.remove();
   });
+
+  const slugKey = document.querySelector(`.${OVERLAY_CLASS}[data-slug-key]`)?.dataset
+    .slugKey;
+  if (slugKey) dedupePagePanels(slugKey);
 }
 
 function pickPrimaryChart(charts) {
@@ -284,49 +349,109 @@ function pickPrimaryChart(charts) {
   })[0];
 }
 
+function isPlotAttached(plot, sectionType = null) {
+  if (!plot?.isConnected) return false;
+
+  const chartType = sectionType || detectChartTypeFromPlot(plot);
+
+  for (const [, data] of attached) {
+    if (
+      data.plot === plot &&
+      data.chartType === chartType &&
+      data.markers?.isConnected
+    ) {
+      return true;
+    }
+  }
+
+  const stableKey = plotStableKey(plot, chartType);
+  const data = attached.get(stableKey);
+  return Boolean(
+    data?.markers?.isConnected &&
+      data.plot === plot &&
+      data.chartType === chartType
+  );
+}
+
 function isChartAttached(chartRoot) {
-  const data = attached.get(chartRoot);
-  return Boolean(data?.markers?.isConnected && chartRoot.isConnected);
+  const plot = getPlotArea(chartRoot);
+  return plot ? isPlotAttached(plot) : false;
 }
 
 async function attachToChart(chartRoot, timeline, options = {}) {
-  if (isChartAttached(chartRoot)) return;
+  const plot = options.plot || getPlotArea(chartRoot);
+  if (!plot) return;
 
-  detachChart(chartRoot);
+  const chartType =
+    options.sectionType ||
+    detectChartTypeFromPlot(plot) ||
+    detectChartType(chartRoot, options.sectionType);
+  const stableKey = plotStableKey(plot, chartType);
+  if (!stableKey || !options.slugKey) return;
 
-  const alignment = await resolveChartAlignment(
-    chartRoot,
-    timeline,
-    options.slug || null,
-    detectChartType(chartRoot)
-  );
+  const sectionLock = `${options.slugKey}-${chartType}`;
+  if (attachingSections.has(sectionLock)) return;
+  if (isPlotAttached(plot, chartType)) return;
 
-  const chartColors = extractChartTeamColors(chartRoot, timeline.game);
-  const markers = buildMarkersLayer(timeline, alignment, chartColors);
-  document.body.appendChild(markers);
-  ensureGlobalListeners();
+  attachingSections.add(sectionLock);
 
-  let panel = null;
-  const panelKey =
-    options.panelKey ||
-    (options.slugKey ? panelKeyFor(options.slugKey, chartRoot) : null);
+  try {
+    for (const [key, data] of attached) {
+      if (data.plot === plot && data.chartType === chartType) {
+        detachPlot(key);
+      }
+    }
+    registerChartRoot(chartRoot, plot);
 
-  if (options.showPanel && panelKey) {
-    removePanel(panelKey);
+    const alignment = await resolveChartAlignment(
+      chartRoot,
+      timeline,
+      options.slug || null,
+      chartType
+    );
+    alignment.plot = plot;
+    alignment.layoutEl = plot;
 
-    panel = buildPanel(timeline, chartColors);
-    panel.dataset.slugKey = options.slugKey;
-    panel.dataset.panelKey = panelKey;
-    pagePanels.set(panelKey, panel);
+    const chartColors = extractChartTeamColors(chartRoot, timeline.game);
+    const markers = buildMarkersLayer(timeline, alignment, chartColors);
+    markers._plotKey = stableKey;
+    markers._plot = plot;
+    markers._chartRoot = chartRoot;
+    document.body.appendChild(markers);
+    ensureGlobalListeners();
 
-    chartRoot.insertAdjacentElement("afterend", panel);
+    let panel = null;
+    const anchor = options.anchor || chartRoot;
+
+    if (options.showPanel) {
+      const panelKey = panelKeyFor(options.slugKey, chartRoot, plot, chartType);
+      panel = removePanelsForSection(options.slugKey, chartType);
+
+      if (!panel) {
+        panel = buildPanel(timeline, chartColors);
+        panel.dataset.slugKey = options.slugKey;
+        panel.dataset.panelKey = panelKey;
+        panel.dataset.chartType = chartType;
+      }
+
+      pagePanels.set(panelKey, panel);
+      placePanel(panel, anchor);
+    }
+
+    layoutMarkers(chartRoot, markers, { refreshAxis: true, plot });
+    attached.set(stableKey, { markers, panel, chartRoot, plot, chartType });
+
+    setTimeout(
+      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot }),
+      800
+    );
+    setTimeout(
+      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot }),
+      2500
+    );
+  } finally {
+    attachingSections.delete(sectionLock);
   }
-
-  layoutMarkers(chartRoot, markers, { refreshAxis: true });
-  attached.set(chartRoot, { markers, panel });
-
-  setTimeout(() => layoutMarkers(chartRoot, markers, { refreshAxis: true }), 800);
-  setTimeout(() => layoutMarkers(chartRoot, markers, { refreshAxis: true }), 2500);
 }
 
 window.relayoutMarkers = () => {
@@ -344,3 +469,8 @@ window.chartFingerprint = chartFingerprint;
 window.pickPrimaryChart = pickPrimaryChart;
 window.slugKeyFrom = slugKeyFrom;
 window.panelKeyFor = panelKeyFor;
+window.isPlotAttached = isPlotAttached;
+window.isChartAttached = isChartAttached;
+window.dedupePagePanels = dedupePagePanels;
+window.sectionHasPanel = (slugKey, chartType) =>
+  Boolean(getSectionPanel(slugKey, chartType));

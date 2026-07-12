@@ -310,7 +310,7 @@ async function resolveChartAlignment(chartRoot, timeline, slug, chartType = "mai
       return positionOnRange(eventTs, rangeStart, rangeEnd);
     },
     refreshAxis() {
-      const el = getLayoutElement(chartRoot);
+      const el = alignment.plot || alignment.layoutEl || getLayoutElement(chartRoot);
       if (!el?.isConnected) return;
       alignment.layoutEl = el;
 

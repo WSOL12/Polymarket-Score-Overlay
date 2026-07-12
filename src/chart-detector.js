@@ -5,26 +5,30 @@ const CHART_MARKERS = ["1H", "6H", "1D", "1W", "1M", "ALL"];
 const PROCESSED_ATTR = "data-poly-score-id";
 
 const plotByRoot = new WeakMap();
-const chartRootsCache = { roots: null };
+const chartRootsCache = { roots: null, targets: null };
 
 function hasChartSignals(el) {
   if (!el) return false;
-  let hits = 0;
-  for (const node of el.querySelectorAll("button, [role='button']")) {
+  const found = new Set();
+  for (const node of el.querySelectorAll("button, [role='button'], span, div, a")) {
     const t = node.textContent?.trim();
-    if (t && CHART_MARKERS.includes(t)) {
-      hits++;
-      if (hits >= 2) return true;
+    if (!t || t.length > 6) continue;
+    if (CHART_MARKERS.includes(t)) {
+      found.add(t);
+      if (found.size >= 2) return true;
     }
   }
   return false;
 }
 
+function isTransparentPlotFill(el) {
+  const fill = (el.getAttribute("fill") || "").toLowerCase();
+  return fill === "transparent" || fill === "none" || fill === "";
+}
+
 function isGraphPlotRect(el) {
   if (!el || el.tagName?.toLowerCase() !== "rect") return false;
-
-  const fill = (el.getAttribute("fill") || "").toLowerCase();
-  if (fill !== "transparent") return false;
+  if (!isTransparentPlotFill(el)) return false;
 
   const x = parseFloat(el.getAttribute("x") || "0");
   const y = parseFloat(el.getAttribute("y") || "0");
@@ -33,13 +37,132 @@ function isGraphPlotRect(el) {
   const w = parseFloat(el.getAttribute("width") || "0");
   const h = parseFloat(el.getAttribute("height") || "0");
 
-  return w >= 400 && h >= 90 && h <= 320;
+  return w >= 280 && h >= 70 && h <= 420;
+}
+
+function isVisiblePlot(el) {
+  if (!el?.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  return r.width >= 180 && r.height >= 45;
 }
 
 function findAllPlotRects() {
-  return [...document.querySelectorAll('rect[fill="transparent"]')].filter(
-    isGraphPlotRect
+  const rects = new Set();
+  for (const el of document.querySelectorAll("svg rect, rect")) {
+    if (isGraphPlotRect(el)) rects.add(el);
+  }
+  return [...rects];
+}
+
+function matchSectionTitle(text) {
+  const t = (text || "").trim();
+  if (!t || t.length > 64) return null;
+  if (/^Moneyline$/i.test(t)) return "moneyline";
+  if (/^Spreads?$/i.test(t)) return "spread";
+  if (/^Totals?$/i.test(t)) return "total";
+  if (/^Moneyline\b/i.test(t) && /Vol/i.test(t)) return "moneyline";
+  if (/^Spreads?\b/i.test(t) && /Vol/i.test(t)) return "spread";
+  if (/^Totals?\b/i.test(t) && /Vol/i.test(t)) return "total";
+  return null;
+}
+
+function findSectionRoot(headerEl, type) {
+  let section = headerEl;
+  for (let i = 0; i < 14 && section.parentElement; i++) {
+    section = section.parentElement;
+    const sample = (section.textContent || "").slice(0, 500);
+    if (sample.length > 3000) continue;
+
+    const title =
+      type === "moneyline"
+        ? /^Moneyline\b/i
+        : type === "spread"
+          ? /^Spreads?\b/i
+          : /^Totals?\b/i;
+
+    if (title.test(sample) && /Vol/i.test(sample)) {
+      const hasSibling =
+        (type !== "moneyline" && /^Moneyline\b/i.test(sample)) ||
+        (type !== "spread" && /^Spreads?\b/i.test(sample)) ||
+        (type !== "total" && /^Totals?\b/i.test(sample));
+      if (!hasSibling || sample.length < 1200) return section;
+    }
+  }
+  return headerEl.parentElement || headerEl;
+}
+
+function findSectionHeaders() {
+  const candidates = new Map();
+
+  for (const el of document.querySelectorAll(
+    "h1, h2, h3, h4, button, span, p, div"
+  )) {
+    if (el.children.length > 5) continue;
+
+    const type = matchSectionTitle(el.textContent);
+    if (!type) continue;
+
+    const textLen = (el.textContent || "").trim().length;
+    const prev = candidates.get(type);
+    if (!prev || textLen < prev.textLen) {
+      candidates.set(type, { el, type, textLen });
+    }
+  }
+
+  const headers = [];
+  for (const { el, type } of candidates.values()) {
+    const section = findSectionRoot(el, type);
+    headers.push({ el, type, section });
+  }
+
+  return headers;
+}
+
+function findNearestPlot(plots, headerEl) {
+  if (!plots.length) return null;
+  if (!headerEl) return plots[0];
+
+  const headerY = headerEl.getBoundingClientRect().top;
+  return plots.sort((a, b) => {
+    const da = Math.abs(a.getBoundingClientRect().top - headerY);
+    const db = Math.abs(b.getBoundingClientRect().top - headerY);
+    return da - db;
+  })[0];
+}
+
+function findPlotInSection(section, headerEl) {
+  if (!section?.isConnected) return null;
+
+  const plotRects = [...section.querySelectorAll("rect")].filter(
+    (r) => isGraphPlotRect(r) && isVisiblePlot(r)
   );
+  const plotRect = findNearestPlot(plotRects, headerEl);
+  if (plotRect) {
+    const root = findChartRootFromPlotRect(plotRect);
+    return {
+      root,
+      plot: plotRect,
+      anchor: findPanelAnchor(plotRect, root),
+    };
+  }
+
+  const canvases = [...section.querySelectorAll("canvas")].filter(isVisiblePlot);
+  const canvas = findNearestPlot(canvases, headerEl);
+  if (canvas) {
+    let container = canvas.parentElement;
+    for (let i = 0; i < 10 && container && section.contains(container); i++) {
+      if (hasChartSignals(container)) {
+        return {
+          root: container,
+          plot: canvas,
+          anchor: findPanelAnchor(canvas, container),
+        };
+      }
+      container = container.parentElement;
+    }
+  }
+
+  return null;
 }
 
 function findChartRootFromPlotRect(plotRect) {
@@ -54,13 +177,72 @@ function findChartRootFromPlotRect(plotRect) {
   return svg?.parentElement || plotRect;
 }
 
-function detectChartType(chartRoot) {
-  let node = chartRoot;
+function findPanelAnchor(plotRect, chartRoot) {
+  let node = plotRect?.closest?.("svg")?.parentElement || chartRoot;
   for (let i = 0; i < 10 && node; i++) {
-    const text = (node.textContent || "").slice(0, 200);
-    if (/Spreads/i.test(text) && text.includes("Vol")) return "spread";
-    if (/Totals/i.test(text) && text.includes("Vol")) return "total";
-    if (/Moneyline/i.test(text) && text.includes("Vol")) return "moneyline";
+    if (hasChartSignals(node)) return node;
+    node = node.parentElement;
+  }
+  return chartRoot || plotRect?.parentElement;
+}
+
+function plotStableKey(plot, sectionType = null) {
+  if (!plot) return null;
+  const type = sectionType || detectChartTypeFromPlot(plot);
+  const w =
+    plot.getAttribute("width") ||
+    String(Math.round(plot.getBoundingClientRect().width));
+  const h =
+    plot.getAttribute("height") ||
+    String(Math.round(plot.getBoundingClientRect().height));
+  return `${type}-${w}x${h}`;
+}
+
+function detectChartTypeFromPlot(plot) {
+  if (!plot?.isConnected) return "main";
+
+  const plotTop = plot.getBoundingClientRect().top;
+  let bestType = null;
+  let bestDist = Infinity;
+
+  for (const el of document.querySelectorAll(
+    "h1, h2, h3, h4, button, span, p, div"
+  )) {
+    if (el.children.length > 5) continue;
+    const type = matchSectionTitle(el.textContent);
+    if (!type) continue;
+
+    const r = el.getBoundingClientRect();
+    if (r.height < 1) continue;
+    const dist = plotTop - r.bottom;
+    if (dist >= -40 && dist < bestDist) {
+      bestDist = dist;
+      bestType = type;
+    }
+  }
+
+  return bestType || "main";
+}
+
+function plotPositionKey(plot) {
+  return plotStableKey(plot);
+}
+
+function detectChartType(chartRoot, hint) {
+  if (hint) return hint;
+
+  let node = chartRoot;
+  for (let i = 0; i < 12 && node; i++) {
+    for (const el of node.querySelectorAll?.(
+      "h1, h2, h3, h4, button, span, p, div"
+    ) || []) {
+      if (el.children.length > 4) continue;
+      const type = matchSectionTitle(el.textContent);
+      if (type) return type;
+    }
+
+    const own = matchSectionTitle((node.textContent || "").slice(0, 80));
+    if (own) return own;
     node = node.parentElement;
   }
   return "main";
@@ -92,45 +274,77 @@ function registerChartRoot(chartRoot, plotRect) {
 
 function invalidateChartCache() {
   chartRootsCache.roots = null;
+  chartRootsCache.targets = null;
 }
 
-function findChartRoots() {
-  if (chartRootsCache.roots) {
-    const alive = chartRootsCache.roots.filter((r) => r.isConnected);
-    if (alive.length === chartRootsCache.roots.length) return alive;
+function findChartTargets() {
+  const bySection = new Map();
+
+  for (const { type, section, el } of findSectionHeaders()) {
+    if (bySection.has(type)) continue;
+
+    const chart = findPlotInSection(section, el);
+    if (!chart) continue;
+
+    registerChartRoot(chart.root, chart.plot);
+    bySection.set(type, {
+      root: chart.root,
+      plot: chart.plot,
+      anchor: chart.anchor,
+      sectionType: type,
+    });
   }
 
-  const roots = new Map();
-
   for (const plotRect of findAllPlotRects()) {
+    if (!isVisiblePlot(plotRect)) continue;
+
+    const inferred = detectChartTypeFromPlot(plotRect);
+    if (bySection.has(inferred)) continue;
+
     const root = findChartRootFromPlotRect(plotRect);
     if (!root) continue;
 
-    const r = plotRect.getBoundingClientRect();
-    if (r.width < 200 || r.height < 50) continue;
-
-    const key = `${Math.round(r.top)}-${Math.round(r.left)}-${Math.round(r.width)}`;
-    if (!roots.has(key)) {
-      registerChartRoot(root, plotRect);
-      roots.set(key, root);
-    }
+    registerChartRoot(root, plotRect);
+    bySection.set(inferred, {
+      root,
+      plot: plotRect,
+      anchor: findPanelAnchor(plotRect, root),
+      sectionType: inferred,
+    });
   }
 
-  if (roots.size === 0) {
+  if (!bySection.size) {
     for (const canvas of document.querySelectorAll("canvas")) {
-      let node = canvas.parentElement;
-      for (let i = 0; i < 12 && node; i++) {
-        if (hasChartSignals(node) && !roots.has(String(node))) {
-          roots.set(String(node), node);
+      if (!isVisiblePlot(canvas)) continue;
+
+      const inferred = detectChartTypeFromPlot(canvas);
+      if (bySection.has(inferred)) continue;
+
+      let container = canvas.parentElement;
+      for (let i = 0; i < 12 && container; i++) {
+        if (hasChartSignals(container)) {
+          registerChartRoot(container, canvas);
+          bySection.set(inferred, {
+            root: container,
+            plot: canvas,
+            anchor: findPanelAnchor(canvas, container),
+            sectionType: inferred,
+          });
           break;
         }
-        node = node.parentElement;
+        container = container.parentElement;
       }
     }
   }
 
-  chartRootsCache.roots = [...roots.values()];
-  return chartRootsCache.roots;
+  const targets = [...bySection.values()];
+  chartRootsCache.targets = targets;
+  chartRootsCache.roots = targets.map((t) => t.root);
+  return targets;
+}
+
+function findChartRoots() {
+  return findChartTargets().map((t) => t.root);
 }
 
 function getPlotRect(chartRoot) {
@@ -433,6 +647,10 @@ window.PolyScoreChart = {
   CHART_MARKERS,
   PROCESSED_ATTR,
   findChartRoots,
+  findChartTargets,
+  plotPositionKey,
+  plotStableKey,
+  detectChartTypeFromPlot,
   findChartsInElement,
   getCanvas,
   getPlotArea,
@@ -450,6 +668,10 @@ window.PolyScoreChart = {
 
 Object.assign(window, {
   findChartRoots,
+  findChartTargets,
+  plotPositionKey,
+  plotStableKey,
+  detectChartTypeFromPlot,
   findChartsInElement,
   getCanvas,
   getPlotArea,
