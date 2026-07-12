@@ -8,7 +8,6 @@ const pagePanels = new Map();
 const attachingSections = new Set();
 
 let overlaySeq = 0;
-let scrollRaf = 0;
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString([], {
@@ -81,22 +80,16 @@ function placePanel(panel, anchor, section) {
 }
 
 function placeListPanel(panel, anchor, listEntry) {
-  if (!panel) return;
+  if (!panel || !listEntry?.headerCard?.isConnected) return;
 
-  let insertAfter = null;
-  const chartRoot = anchor?.closest?.("[class*='chart']") || anchor;
+  const target =
+    listEntry.panel?.isConnected && isListAccordionOpen(listEntry.panel, listEntry.headerCard)
+      ? listEntry.panel
+      : listEntry.headerCard;
 
-  if (listEntry?.panel?.isConnected && isListAccordionOpen(listEntry.panel, listEntry.headerCard)) {
-    insertAfter = listEntry.panel;
-  } else if (chartRoot?.isConnected) {
-    insertAfter = findPanelInsertAfter(chartRoot, listEntry?.headerCard);
-  } else {
-    insertAfter = findPanelInsertAfter(anchor, listEntry?.headerCard);
-  }
-
-  if (!insertAfter?.isConnected) return;
-  if (panel.previousElementSibling === insertAfter) return;
-  insertAfter.insertAdjacentElement("afterend", panel);
+  if (!target?.isConnected) return;
+  if (panel.parentElement === target) return;
+  target.appendChild(panel);
 }
 
 function teamDisplayName(team) {
@@ -171,25 +164,54 @@ function syncPanelVisibility() {
   }
 }
 
+function detachChart(chartRoot) {
+  const plot = getPlotArea(chartRoot);
+  if (!plot) return;
+  const stableKey = plotStableKey(plot, detectChartTypeFromPlot(plot));
+  if (stableKey) detachPlot(stableKey);
+}
+
+function removePanel(panelKey) {
+  const panel = pagePanels.get(panelKey);
+  if (panel?.isConnected) panel.remove();
+  pagePanels.delete(panelKey);
+}
+
+function resetPagePanels() {
+  document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach((el) => el.remove());
+  pagePanels.clear();
+}
+
 function syncListPanelVisibility() {
   for (const [, data] of attached) {
+    if (!data.listEntry) continue;
+
+    const entry = findListGameEntries().find(
+      (e) => slugKeyFrom(e.slug) === data.slugKey
+    );
+    if (entry) data.listEntry = entry;
+
     const visible = isListGameVisible(data.plot, data.chartRoot, data.listEntry);
 
     if (data.panel?.isConnected) {
       data.panel.style.display = visible ? "" : "none";
     }
 
-    if (data.markers?.isConnected) {
-      data.markers._sectionHidden = !visible;
-      if (!visible) {
-        data.markers.style.display = "none";
-      } else {
-        layoutMarkers(data.chartRoot, data.markers, {
-          plot: data.plot,
-          section: data.listEntry?.panel || data.card || data.section,
-        });
-      }
+    if (!data.markers?.isConnected) continue;
+
+    if (!visible) {
+      data.markers._sectionHidden = true;
+      data.markers.style.display = "none";
+      data.markers.style.visibility = "hidden";
+      continue;
     }
+
+    data.markers._sectionHidden = false;
+    data.markers.style.visibility = "visible";
+    layoutMarkers(data.chartRoot, data.markers, {
+      plot: data.plot,
+      refreshAxis: false,
+    });
   }
 
   document.querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key]`).forEach((panel) => {
@@ -374,6 +396,82 @@ function buildMarkersLayer(timeline, alignment, chartColors) {
   return layer;
 }
 
+function getListMarkerHost(plot) {
+  if (!plot?.isConnected) return null;
+  if (plot.tagName === "CANVAS" || plot.tagName?.toLowerCase() === "rect") {
+    return plot.parentElement || plot;
+  }
+  return plot;
+}
+
+function mountListMarkers(markers, plot) {
+  const host = getListMarkerHost(plot);
+  if (!host?.isConnected) return false;
+
+  const pos = getComputedStyle(host).position;
+  if (pos === "static") host.style.position = "relative";
+
+  markers.classList.add("poly-score-markers-inplot");
+  markers.style.position = "absolute";
+  markers.style.top = "0";
+  markers.style.left = "0";
+  markers.style.width = "100%";
+  markers.style.height = "100%";
+  markers.style.transform = "none";
+  markers.style.zIndex = "5";
+
+  if (markers.parentElement !== host) host.appendChild(markers);
+  return true;
+}
+
+function mountListMarkersOrBody(markers, plot) {
+  markers.classList.remove("poly-score-markers-inplot");
+  markers.style.position = "";
+  markers.style.transform = "";
+  markers.style.width = "";
+  markers.style.height = "";
+  if (!markers.isConnected) document.body.appendChild(markers);
+}
+
+function repositionListMarkers() {
+  if (getPageType?.() !== "list") return;
+
+  for (const [, data] of attached) {
+    if (!data.listEntry || !data.markers?.isConnected || !data.plot?.isConnected) continue;
+    if (data.markers._sectionHidden) continue;
+    mountListMarkersOrBody(data.markers, data.plot);
+    repositionMarkersLayer(data.markers, data.plot);
+    refreshMarkerPositions(data.markers);
+  }
+}
+
+function repositionMarkersLayer(markersLayer, plot) {
+  if (!plot?.isConnected || !markersLayer?.isConnected) return false;
+
+  if (markersLayer._sectionHidden) {
+    markersLayer.style.display = "none";
+    return false;
+  }
+
+  if (markersLayer.classList.contains("poly-score-markers-inplot")) {
+    markersLayer.classList.remove("poly-score-markers-inplot");
+  }
+
+  const plotR = plot.getBoundingClientRect();
+  if (plotR.width < 10 || plotR.height < 10) {
+    markersLayer.style.display = "none";
+    return false;
+  }
+
+  markersLayer.style.display = "block";
+  markersLayer.style.top = "0";
+  markersLayer.style.left = "0";
+  markersLayer.style.transform = `translate3d(${plotR.left}px, ${plotR.top}px, 0)`;
+  markersLayer.style.width = `${plotR.width}px`;
+  markersLayer.style.height = `${plotR.height}px`;
+  return true;
+}
+
 function refreshMarkerPositions(markersLayer) {
   const alignment = markersLayer._alignment;
   if (!alignment) return;
@@ -400,23 +498,7 @@ function layoutMarkers(chartRoot, markersLayer, options = {}) {
     getPlotArea(chartRoot);
   if (!plot || !markersLayer?.isConnected) return;
 
-  const plotR = plot.getBoundingClientRect();
-  if (plotR.width < 10 || plotR.height < 10) {
-    markersLayer.style.display = "none";
-    return;
-  }
-
-  if (markersLayer._sectionHidden) {
-    markersLayer.style.display = "none";
-    return;
-  }
-
-  markersLayer.style.display = "block";
-  markersLayer.style.position = "fixed";
-  markersLayer.style.top = `${plotR.top}px`;
-  markersLayer.style.left = `${plotR.left}px`;
-  markersLayer.style.width = `${plotR.width}px`;
-  markersLayer.style.height = `${plotR.height}px`;
+  if (!repositionMarkersLayer(markersLayer, plot)) return;
 
   if (options.refreshAxis) {
     markersLayer._alignment?.refreshAxis?.();
@@ -424,19 +506,53 @@ function layoutMarkers(chartRoot, markersLayer, options = {}) {
   refreshMarkerPositions(markersLayer);
 }
 
-function layoutAllMarkers(refreshAxis = false) {
+function hideAllMarkers() {
+  for (const [, data] of attached) {
+    if (!data.markers?.isConnected) continue;
+    data.markers._sectionHidden = true;
+    data.markers.style.display = "none";
+    data.markers.style.visibility = "hidden";
+  }
+
+  document.querySelectorAll(`.${MARKERS_CLASS}`).forEach((el) => {
+    el.style.display = "none";
+    el.style.visibility = "hidden";
+  });
+}
+
+function repositionAllMarkers() {
+  if (getPageType?.() === "list") return;
+
+  for (const [, data] of attached) {
+    if (data.markers?.isConnected && data.plot?.isConnected) {
+      if (data.markers._sectionHidden) continue;
+      repositionMarkersLayer(data.markers, data.plot);
+    }
+  }
+}
+
+function layoutAllMarkers(refreshAxis = false, options = {}) {
+  if (getPageType?.() === "list" && options.refreshPlots !== false) {
+    refreshListPlotRefs();
+  }
+
   for (const [, data] of attached) {
     if (data.markers?.isConnected) {
       layoutMarkers(data.chartRoot, data.markers, {
         refreshAxis,
         plot: data.plot,
-        section: data.section,
+        section: data.listEntry?.panel || data.section,
       });
     }
   }
 }
 
 function relayoutAllMarkers(refreshAxis = false) {
+  if (getPageType?.() === "list") {
+    repositionListMarkers();
+    syncListPanelVisibility();
+    return;
+  }
   syncPanelVisibility();
   layoutAllMarkers(refreshAxis);
 }
@@ -449,14 +565,155 @@ function debounce(fn, ms) {
   };
 }
 
-function onScrollOrResize(e) {
-  if (!attached.size) return;
-  if (e?.target?.closest?.(".ps-timeline-scroll, .poly-score-root")) return;
-  if (scrollRaf) return;
-  scrollRaf = requestAnimationFrame(() => {
-    scrollRaf = 0;
-    layoutAllMarkers(false);
+let scrollEndTimer = 0;
+let listPageScrolling = false;
+let listTrackedSlugKey = null;
+let listBusy = false;
+
+function isListPageBusy() {
+  return listBusy;
+}
+
+function maintainListPage() {
+  if (getPageType?.() !== "list") return null;
+
+  const active = findActiveListGame();
+  const activeKey = active ? slugKeyFrom(active.slug) : null;
+
+  if (!activeKey) {
+    if (listTrackedSlugKey !== null || attached.size > 0) {
+      clearAllListOverlays();
+    }
+    return null;
+  }
+
+  if (listTrackedSlugKey && listTrackedSlugKey !== activeKey) {
+    detachAllListOverlays(activeKey);
+  }
+  listTrackedSlugKey = activeKey;
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key]`).forEach((panel) => {
+    if (panel.dataset.slugKey !== activeKey) panel.remove();
   });
+  document.querySelectorAll(`.${MARKERS_CLASS}[data-slug-key]`).forEach((el) => {
+    if (el.dataset.slugKey !== activeKey) el.remove();
+  });
+
+  for (const [key, data] of [...attached.entries()]) {
+    if (data.slugKey !== activeKey) {
+      data.markers?.remove();
+      data.panel?.remove();
+      attached.delete(key);
+    }
+  }
+
+  return active;
+}
+
+function beginListPageUpdate() {
+  listBusy = true;
+}
+
+function endListPageUpdate() {
+  listBusy = false;
+}
+
+function syncListPageState() {
+  return maintainListPage();
+}
+
+function clearAllListOverlays() {
+  if (getPageType?.() !== "list") return;
+
+  for (const [key, data] of [...attached.entries()]) {
+    data.markers?.remove();
+    data.panel?.remove();
+    attached.delete(key);
+  }
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach((el) => el.remove());
+  document.querySelectorAll(`.${MARKERS_CLASS}`).forEach((el) => el.remove());
+  pagePanels.clear();
+  listTrackedSlugKey = null;
+}
+
+function isListPageScrolling() {
+  return listPageScrolling;
+}
+
+function resetListPageScrolling() {
+  listPageScrolling = false;
+}
+
+function detachAllListOverlays(keepSlugKey = null) {
+  if (getPageType?.() !== "list") return;
+  if (!keepSlugKey) {
+    clearAllListOverlays();
+    return;
+  }
+
+  for (const [key, data] of [...attached.entries()]) {
+    if (data.slugKey === keepSlugKey) continue;
+    data.markers?.remove();
+    data.panel?.remove();
+    attached.delete(key);
+  }
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key]`).forEach((panel) => {
+    if (panel.dataset.slugKey === keepSlugKey) return;
+    panel.remove();
+    pagePanels.delete(panel.dataset.panelKey);
+  });
+
+  document.querySelectorAll(`.${MARKERS_CLASS}[data-slug-key]`).forEach((el) => {
+    if (el.dataset.slugKey === keepSlugKey) return;
+    el.remove();
+  });
+}
+
+function cleanupListPanels() {
+  if (getPageType?.() !== "list") return;
+
+  const activeSlugs = new Set(
+    [...attached.values()]
+      .filter((data) => data.listEntry && data.markers?.isConnected)
+      .map((data) => data.slugKey)
+  );
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}[data-slug-key]`).forEach((panel) => {
+    if (!activeSlugs.has(panel.dataset.slugKey)) {
+      panel.remove();
+      pagePanels.delete(panel.dataset.panelKey);
+    }
+  });
+}
+
+function detachClosedListGames() {
+  syncListPageState();
+}
+
+function onScrollEnd() {
+  listPageScrolling = false;
+
+  if (getPageType?.() === "list") return;
+
+  cleanupOrphans();
+  layoutAllMarkers(false, { refreshPlots: true });
+}
+
+function onScrollOrResize(e) {
+  if (e?.target?.closest?.(".ps-timeline-scroll, .poly-score-root")) return;
+
+  if (getPageType?.() === "list") {
+    repositionListMarkers();
+    return;
+  }
+
+  if (!attached.size) return;
+
+  repositionAllMarkers();
+  clearTimeout(scrollEndTimer);
+  scrollEndTimer = setTimeout(onScrollEnd, 150);
 }
 
 function ensureGlobalListeners() {
@@ -473,39 +730,88 @@ function detachPlot(stableKey) {
   attached.delete(stableKey);
 }
 
-function detachChart(chartRoot) {
-  const plot = getPlotArea(chartRoot);
-  if (!plot) return;
-  const stableKey = plotStableKey(plot, detectChartTypeFromPlot(plot));
-  if (stableKey) detachPlot(stableKey);
-}
-
-function removePanel(panelKey) {
-  const panel = pagePanels.get(panelKey);
-  if (panel?.isConnected) panel.remove();
-  pagePanels.delete(panelKey);
-}
-
-function resetPagePanels() {
-  document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach((el) => el.remove());
-  pagePanels.clear();
-}
-
-function cleanupOrphans() {
-  for (const [plotKey, data] of attached) {
-    if (
-      !data.plot?.isConnected ||
-      !data.chartRoot?.isConnected ||
-      !data.markers?.isConnected
-    ) {
+function detachBySlugChart(slugKey, chartType = "main") {
+  for (const [key, data] of [...attached.entries()]) {
+    if (data.slugKey === slugKey && data.chartType === chartType) {
       data.markers?.remove();
-      attached.delete(plotKey);
+      attached.delete(key);
     }
   }
 
+  document.querySelectorAll(`.${MARKERS_CLASS}[data-slug-key="${slugKey}"]`).forEach((el) => {
+    el.remove();
+  });
+}
+
+function findAttachedBySlug(slugKey, chartType = "main") {
+  for (const [key, data] of attached) {
+    if (data.slugKey === slugKey && data.chartType === chartType) {
+      return { key, data };
+    }
+  }
+  return null;
+}
+
+function refreshListPlotRefs() {
+  if (getPageType?.() !== "list") return;
+
+  for (const [key, data] of [...attached.entries()]) {
+    if (!data.slugKey || !data.listEntry) continue;
+
+    const entry = findListGameEntries().find(
+      (e) => slugKeyFrom(e.slug) === data.slugKey
+    );
+    if (entry) data.listEntry = entry;
+
+    if (!entry || !isListEntryExpanded(entry)) {
+      data.markers?.remove();
+      attached.delete(key);
+      continue;
+    }
+
+    const chart = findListChartForGame(data.listEntry);
+    if (!chart?.plot?.isConnected) {
+      data.plot = null;
+      continue;
+    }
+
+    data.plot = chart.plot;
+    data.chartRoot = chart.root;
+    data.listEntry = chart.entry || data.listEntry;
+    if (data.markers?.isConnected) {
+      data.markers._plot = chart.plot;
+      data.markers._chartRoot = chart.root;
+    }
+    registerChartRoot(chart.root, chart.plot);
+  }
+}
+
+function cleanupOrphans() {
+  for (const [plotKey, data] of [...attached]) {
+    if (!data.markers?.isConnected) {
+      attached.delete(plotKey);
+      continue;
+    }
+
+    if (!data.plot?.isConnected || !data.chartRoot?.isConnected) {
+      if (data.listEntry && getPageType?.() === "list") {
+        const entry = findListGameEntries().find(
+          (e) => slugKeyFrom(e.slug) === data.slugKey
+        );
+        if (entry && isListEntryExpanded(entry)) continue;
+      }
+      data.markers?.remove();
+      attached.delete(plotKey);
+      continue;
+    }
+  }
+
+  const keptMarkers = new Set(
+    [...attached.values()].map((data) => data.markers).filter(Boolean)
+  );
+
   document.querySelectorAll(`.${MARKERS_CLASS}`).forEach((el) => {
-    const key = el._plotKey;
-    if (!key || !attached.has(key)) el.remove();
+    if (!keptMarkers.has(el)) el.remove();
   });
 
   const slugKey = document.querySelector(`.${OVERLAY_CLASS}[data-slug-key]`)?.dataset
@@ -568,12 +874,44 @@ async function attachToChart(chartRoot, timeline, options = {}) {
 
   const sectionLock = `${options.slugKey}-${chartType}`;
   if (attachingSections.has(sectionLock)) return;
-  if (isPlotAttached(plot, chartType, options.slugKey)) return;
+
+  const existing = findAttachedBySlug(options.slugKey, chartType);
+  if (
+    existing &&
+    existing.data.plot === plot &&
+    existing.data.markers?.isConnected &&
+    isPlotAttached(plot, chartType, options.slugKey)
+  ) {
+    existing.data.listEntry = options.listEntry || existing.data.listEntry;
+    existing.data.plot = plot;
+    existing.data.chartRoot = chartRoot;
+    if (options.listEntry) {
+      mountListMarkersOrBody(existing.data.markers, plot);
+    }
+    if (options.listEntry && existing.data.panel) {
+      placeListPanel(
+        existing.data.panel,
+        options.anchor || chartRoot,
+        options.listEntry
+      );
+    }
+    layoutMarkers(chartRoot, existing.data.markers, {
+      refreshAxis: true,
+      plot,
+      section:
+        options.listEntry?.panel || options.card || options.section || null,
+    });
+    if (!options.listEntry) syncPanelVisibility();
+    return;
+  }
 
   attachingSections.add(sectionLock);
 
   try {
-    for (const [key, data] of attached) {
+    detachBySlugChart(options.slugKey, chartType);
+    cleanupOrphans();
+
+    for (const [key, data] of [...attached]) {
       if (data.plot === plot && data.chartType === chartType) {
         detachPlot(key);
       }
@@ -600,7 +938,12 @@ async function attachToChart(chartRoot, timeline, options = {}) {
     markers._plot = plot;
     markers._chartRoot = chartRoot;
     markers._section = section;
-    document.body.appendChild(markers);
+    markers.dataset.slugKey = options.slugKey;
+    if (listEntry) {
+      mountListMarkersOrBody(markers, plot);
+    } else {
+      document.body.appendChild(markers);
+    }
     ensureGlobalListeners();
 
     let panel = null;
@@ -644,31 +987,44 @@ async function attachToChart(chartRoot, timeline, options = {}) {
       slugKey: options.slugKey,
     });
     syncPanelVisibility();
+    if (options.listEntry) {
+      markers._sectionHidden = false;
+      markers.style.display = "block";
+      markers.style.visibility = "visible";
+    }
+    cleanupOrphans();
 
-    setTimeout(
-      () =>
-        layoutMarkers(chartRoot, markers, {
-          refreshAxis: true,
-          plot,
-          section: card || section,
-        }),
-      800
-    );
-    setTimeout(
-      () =>
-        layoutMarkers(chartRoot, markers, {
-          refreshAxis: true,
-          plot,
-          section: card || section,
-        }),
-      2500
-    );
+    if (!listEntry) {
+      setTimeout(
+        () =>
+          layoutMarkers(chartRoot, markers, {
+            refreshAxis: true,
+            plot,
+            section: listEntry?.panel || card || section,
+          }),
+        800
+      );
+      setTimeout(
+        () =>
+          layoutMarkers(chartRoot, markers, {
+            refreshAxis: true,
+            plot,
+            section: listEntry?.panel || card || section,
+          }),
+        2500
+      );
+    }
   } finally {
     attachingSections.delete(sectionLock);
   }
 }
 
 window.relayoutMarkers = () => {
+  if (getPageType?.() === "list") {
+    if (listPageScrolling) return;
+    relayoutAllMarkers(false);
+    return;
+  }
   relayoutAllMarkers(true);
   setTimeout(() => relayoutAllMarkers(true), 400);
   setTimeout(() => relayoutAllMarkers(true), 1200);
@@ -683,6 +1039,22 @@ window.scheduleVisibilitySync = scheduleVisibilitySync;
 window.PolyScoreOverlay = { attachToChart, detachChart, pickPrimaryChart };
 window.attachToChart = attachToChart;
 window.cleanupOrphans = cleanupOrphans;
+window.detachBySlugChart = detachBySlugChart;
+window.findAttachedBySlug = findAttachedBySlug;
+window.hideAllMarkers = hideAllMarkers;
+window.refreshListPlotRefs = refreshListPlotRefs;
+window.clearAllListOverlays = clearAllListOverlays;
+window.maintainListPage = maintainListPage;
+window.repositionListMarkers = repositionListMarkers;
+window.beginListPageUpdate = beginListPageUpdate;
+window.endListPageUpdate = endListPageUpdate;
+window.isListPageBusy = isListPageBusy;
+window.syncListPageState = syncListPageState;
+window.detachAllListOverlays = detachAllListOverlays;
+window.cleanupListPanels = cleanupListPanels;
+window.detachClosedListGames = detachClosedListGames;
+window.isListPageScrolling = isListPageScrolling;
+window.resetListPageScrolling = resetListPageScrolling;
 window.resetPagePanels = resetPagePanels;
 window.chartFingerprint = chartFingerprint;
 window.pickPrimaryChart = pickPrimaryChart;

@@ -23,7 +23,23 @@
     const slugKey = options.slugKey || slugKeyFrom(slug);
 
     if (!slug || !timeline || !plot) return;
-    if (isPlotAttached(plot, chartType, slugKey)) return;
+    if (isPlotAttached(plot, chartType, slugKey)) {
+      if (listEntry) {
+        await attachToChart(root, timeline, {
+          ...options,
+          slug,
+          slugKey,
+          plot,
+          anchor,
+          section,
+          card,
+          listEntry,
+          sectionType: chartType,
+          showPanel: options.showPanel !== false,
+        });
+      }
+      return;
+    }
 
     const key = `${slugKey}-${chartType}`;
     if (pending.has(key)) return;
@@ -78,29 +94,17 @@
   }
 
   async function scanListPage() {
-    const usedPlots = new Set();
-    const entries = findListGameEntries().sort((a, b) => {
-      const aOpen = isListAccordionOpen(a.panel, a.headerCard) ? 1 : 0;
-      const bOpen = isListAccordionOpen(b.panel, b.headerCard) ? 1 : 0;
-      return bOpen - aOpen;
-    });
+    beginListPageUpdate?.();
+    try {
+      const active = maintainListPage?.();
+      if (!active) return;
 
-    for (const entry of entries) {
-      const { slug } = entry;
-      if (!slug) continue;
+      const chart = findListChartForGame(active);
+      if (!chart) return;
 
-      const timeline = await getTimeline(slug);
-      if (!timeline) continue;
-
-      const slugKey = slugKeyFrom(slug);
-      const chart = findListChartForGame(entry);
-      if (!chart || usedPlots.has(chart.plot)) continue;
-      if (isPlotAttached(chart.plot, "main", slugKey)) {
-        usedPlots.add(chart.plot);
-        continue;
-      }
-
-      usedPlots.add(chart.plot);
+      const slugKey = slugKeyFrom(active.slug);
+      const timeline = await getTimeline(active.slug);
+      if (!timeline) return;
 
       await processChart(
         {
@@ -108,23 +112,23 @@
           plot: chart.plot,
           anchor: chart.anchor,
           sectionType: "main",
-          section: entry.panel || entry.headerCard,
-          card: entry.headerCard,
-          listEntry: entry,
+          section: active.panel || active.headerCard,
+          card: active.headerCard,
+          listEntry: active,
         },
-        slug,
+        active.slug,
         timeline,
         {
-          slug,
+          slug: active.slug,
           slugKey,
           showPanel: true,
           compact: true,
-          listEntry: entry,
+          listEntry: active,
         }
       );
+    } finally {
+      endListPageUpdate?.();
     }
-
-    syncPanelVisibility?.();
   }
 
   async function scan() {
@@ -136,7 +140,12 @@
       else if (pageType === "list") await scanListPage();
     } finally {
       scanRunning = false;
-      relayoutMarkers();
+      if (getPageType() === "list") {
+        repositionListMarkers?.();
+        syncListPanelVisibility?.();
+      } else {
+        relayoutMarkers();
+      }
     }
   }
 
@@ -219,10 +228,28 @@
     return false;
   }
 
+  function isListPageGameHeaderClick(el) {
+    if (el.closest('a[href*="/sports/mlb/mlb-"]')) return true;
+    const text = (el.textContent || "").trim();
+    return /\bFINAL\b/i.test(text) && text.length < 40;
+  }
+
   function onListPageInteraction() {
     invalidateChartCache();
-    scheduleScanBurst([50, 250, 700, 1500, 3000]);
-    relayoutMarkers();
+    scheduleScan(350);
+  }
+
+  function isListAccordionMutation(m) {
+    const t = m.target;
+    if (t?.id?.startsWith?.("sports-accordion-item-mlb-")) return true;
+    if (t?.closest?.('[id^="sports-accordion-item-mlb-"]')) return true;
+    if (
+      m.type === "attributes" &&
+      (m.attributeName === "data-state" || m.attributeName === "hidden")
+    ) {
+      return Boolean(t?.closest?.('[id^="sports-accordion-item-mlb-"]'));
+    }
+    return false;
   }
 
   function watchListAccordions() {
@@ -232,30 +259,35 @@
     let syncTimer = 0;
     const observer = new MutationObserver((mutations) => {
       if (getPageType() !== "list") return;
-      const relevant = mutations.some(
-        (m) =>
-          m.target?.id?.startsWith?.("sports-accordion-item-mlb-") ||
-          (m.type === "attributes" &&
-            (m.attributeName === "data-state" || m.attributeName === "hidden"))
-      );
-      if (!relevant) return;
+      if (isListPageBusy?.()) return;
+      if (
+        mutations.every((m) =>
+          m.target?.closest?.(".poly-score-root, .poly-score-markers")
+        )
+      ) {
+        return;
+      }
+      if (!mutations.some(isListAccordionMutation)) return;
+
+      maintainListPage?.();
       clearTimeout(syncTimer);
-      syncTimer = setTimeout(() => {
-        invalidateChartCache();
-        syncPanelVisibility?.();
-        scheduleScanBurst([50, 300, 900]);
-      }, 60);
+      syncTimer = setTimeout(() => scheduleScan(400), 150);
     });
 
     observer.observe(document.body, {
       subtree: true,
       attributes: true,
-      attributeFilter: ["data-state", "hidden", "style", "class"],
+      attributeFilter: ["data-state", "hidden"],
       childList: true,
     });
   }
 
   function relayoutMarkers() {
+    if (getPageType() === "list") {
+      if (isListPageScrolling?.()) return;
+      relayoutAllMarkers?.(false);
+      return;
+    }
     relayoutAllMarkers?.(true);
     setTimeout(() => relayoutAllMarkers?.(true), 400);
     setTimeout(() => relayoutAllMarkers?.(true), 1200);
@@ -332,18 +364,16 @@
   setInterval(() => {
     const pageType = getPageType();
     if (pageType === "list") {
-      syncPanelVisibility?.();
-      if (scanRunning) return;
-      const entries = findListGameEntries();
-      if (
-        entries.some((entry) => {
-          const chart = findListChartForGame(entry);
-          if (!chart) return false;
-          return !isPlotAttached(chart.plot, "main", slugKeyFrom(entry.slug));
-        })
-      ) {
-        scan();
+      if (scanRunning || isListPageBusy?.()) return;
+      maintainListPage?.();
+      const active = findActiveListGame?.();
+      if (!active) return;
+      const slugKey = slugKeyFrom(active.slug);
+      const existing = findAttachedBySlug?.(slugKey, "main");
+      if (existing?.data?.panel?.isConnected && existing?.data?.markers?.isConnected) {
+        return;
       }
+      scan();
       return;
     }
 
@@ -374,6 +404,7 @@
       const pageType = getPageType();
 
       if (pageType === "list") {
+        if (e.target.closest(".poly-score-root, .poly-score-markers")) return;
         const el = e.target.closest(
           "button, [role='button'], a, span, div"
         );
