@@ -103,6 +103,7 @@ function updatePanelColors(panel, chartColors, timeline) {
 }
 
 function syncPanelVisibility() {
+  invalidateChartCache?.();
   const targets = findChartTargets?.() || [];
   const visibleByType = new Map();
 
@@ -143,6 +144,49 @@ function syncPanelVisibility() {
         section: data.section,
       });
     }
+  }
+}
+
+const MARKET_SECTION_TYPES = ["moneyline", "spread", "total", "main"];
+
+function setSectionOverlaysVisible(chartType, visible) {
+  document
+    .querySelectorAll(`.${OVERLAY_CLASS}[data-chart-type="${chartType}"]`)
+    .forEach((panel) => {
+      panel.style.display = visible ? "" : "none";
+    });
+
+  for (const [, data] of attached) {
+    if (data.chartType !== chartType) continue;
+    if (data.panel?.isConnected) {
+      data.panel.style.display = visible ? "" : "none";
+    }
+    if (!data.markers?.isConnected) continue;
+    data.markers._sectionHidden = !visible;
+    if (!visible) {
+      data.markers.style.display = "none";
+    }
+  }
+}
+
+function hidePanelsExcept(activeType) {
+  for (const type of MARKET_SECTION_TYPES) {
+    if (type === activeType) continue;
+    setSectionOverlaysVisible(type, false);
+  }
+}
+
+function hideAllPanelsImmediately() {
+  for (const type of MARKET_SECTION_TYPES) {
+    setSectionOverlaysVisible(type, false);
+  }
+}
+
+function scheduleVisibilitySync() {
+  syncPanelVisibility();
+  requestAnimationFrame(() => syncPanelVisibility());
+  for (const ms of [50, 150, 350, 800]) {
+    setTimeout(() => syncPanelVisibility(), ms);
   }
 }
 
@@ -550,6 +594,9 @@ window.relayoutMarkers = () => {
 window.layoutAllMarkers = layoutAllMarkers;
 window.relayoutAllMarkers = relayoutAllMarkers;
 window.syncPanelVisibility = syncPanelVisibility;
+window.hidePanelsExcept = hidePanelsExcept;
+window.hideAllPanelsImmediately = hideAllPanelsImmediately;
+window.scheduleVisibilitySync = scheduleVisibilitySync;
 window.PolyScoreOverlay = { attachToChart, detachChart, pickPrimaryChart };
 window.attachToChart = attachToChart;
 window.cleanupOrphans = cleanupOrphans;

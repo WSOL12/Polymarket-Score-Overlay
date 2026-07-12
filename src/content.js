@@ -124,11 +124,56 @@
     debounceTimer = setTimeout(scan, delay);
   }
 
-  function scheduleScanBurst(delays = [600, 1800]) {
+  function scheduleScanBurst(delays = [400, 1200, 2500]) {
     invalidateChartCache();
     for (const delay of delays) {
       setTimeout(scan, delay);
     }
+  }
+
+  function detectMarketSectionClick(el) {
+    let node = el;
+    for (let i = 0; i < 14 && node; i++) {
+      const sample = (node.textContent || "").slice(0, 400);
+      if (sample.length > 2500) {
+        node = node.parentElement;
+        continue;
+      }
+      if (/^Totals?\b/i.test(sample) && /Vol/i.test(sample)) return "total";
+      if (/^Spreads?\b/i.test(sample) && /Vol/i.test(sample)) return "spread";
+      if (/^Moneyline\b/i.test(sample) && /Vol/i.test(sample)) return "moneyline";
+      node = node.parentElement;
+    }
+
+    const text = (el.textContent || "").trim();
+    if (/^Totals?$/i.test(text)) return "total";
+    if (/^Spreads?$/i.test(text)) return "spread";
+    if (/^Moneyline$/i.test(text)) return "moneyline";
+    return null;
+  }
+
+  function isSectionHeaderClick(el) {
+    const text = (el.textContent || "").trim();
+    if (/^(Spreads?|Totals?|Moneyline)$/i.test(text)) return true;
+    return (
+      /^(Spreads?|Totals?|Moneyline)\b/i.test(text) &&
+      /Vol/i.test(text) &&
+      text.length < 48
+    );
+  }
+
+  function onMarketSectionChange(el) {
+    const sectionType = detectMarketSectionClick(el);
+
+    if (isSectionHeaderClick(el)) {
+      hideAllPanelsImmediately?.();
+    } else if (sectionType) {
+      hidePanelsExcept?.(sectionType);
+    }
+
+    scheduleVisibilitySync?.();
+    scheduleScanBurst();
+    relayoutMarkers();
   }
 
   function relayoutMarkers() {
@@ -238,9 +283,7 @@
       }
 
       if (isChartRevealClick(el) || clickNearMarketSection(el)) {
-        syncPanelVisibility?.();
-        scheduleScanBurst();
-        relayoutMarkers();
+        onMarketSectionChange(el);
       }
     },
     { passive: true }

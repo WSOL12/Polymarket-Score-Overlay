@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Poly Score",
-  "version": "1.0.35",
+  "version": "1.0.36",
   "description": "MLB score timeline on Polymarket charts for completed games",
   "icons": {
     "16": "icons/icon16.png",
