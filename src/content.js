@@ -18,7 +18,7 @@
   }
 
   async function processChart(target, slug, timeline, options = {}) {
-    const { root, plot, anchor, sectionType } = target;
+    const { root, plot, anchor, sectionType, section } = target;
     const chartType = sectionType || "main";
     const slugKey = options.slugKey || slugKeyFrom(slug);
 
@@ -36,6 +36,7 @@
         slugKey,
         plot,
         anchor,
+        section,
         sectionType: chartType,
         showPanel: options.showPanel !== false,
       });
@@ -71,6 +72,7 @@
     }
 
     dedupePagePanels(slugKey);
+    syncPanelVisibility?.();
   }
 
   async function scanListPage() {
@@ -130,10 +132,10 @@
   }
 
   function relayoutMarkers() {
-    layoutAllMarkers?.(true);
-    setTimeout(() => layoutAllMarkers?.(true), 400);
-    setTimeout(() => layoutAllMarkers?.(true), 1200);
-    setTimeout(() => layoutAllMarkers?.(true), 2200);
+    relayoutAllMarkers?.(true);
+    setTimeout(() => relayoutAllMarkers?.(true), 400);
+    setTimeout(() => relayoutAllMarkers?.(true), 1200);
+    setTimeout(() => relayoutAllMarkers?.(true), 2200);
   }
 
   function isTimeframeButton(el) {
@@ -202,7 +204,9 @@
   setTimeout(scan, 2000);
 
   setInterval(() => {
-    if (getPageType() !== "game" || scanRunning) return;
+    if (getPageType() !== "game") return;
+    syncPanelVisibility?.();
+    if (scanRunning) return;
     invalidateChartCache();
     const targets = findChartTargets();
     if (
@@ -234,6 +238,7 @@
       }
 
       if (isChartRevealClick(el) || clickNearMarketSection(el)) {
+        syncPanelVisibility?.();
         scheduleScanBurst();
         relayoutMarkers();
       }

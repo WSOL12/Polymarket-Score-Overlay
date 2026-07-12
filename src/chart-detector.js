@@ -186,6 +186,33 @@ function findPanelAnchor(plotRect, chartRoot) {
   return chartRoot || plotRect?.parentElement;
 }
 
+function findSectionForPlot(plot) {
+  if (!plot?.isConnected) return null;
+  const type = detectChartTypeFromPlot(plot);
+  for (const { type: t, section } of findSectionHeaders()) {
+    if (t === type && section?.contains(plot)) return section;
+  }
+  return null;
+}
+
+function findPanelInsertAfter(anchor, section) {
+  if (section?.isConnected) return section;
+
+  let node = anchor;
+  for (let i = 0; i < 14 && node?.parentElement; i++) {
+    const parent = node.parentElement;
+    const style = getComputedStyle(parent);
+    const clips =
+      style.overflow === "hidden" ||
+      style.overflowY === "hidden" ||
+      style.overflow === "clip" ||
+      style.overflowY === "clip";
+    if (clips) return parent;
+    node = parent;
+  }
+  return anchor;
+}
+
 function plotStableKey(plot, sectionType = null) {
   if (!plot) return null;
   const type = sectionType || detectChartTypeFromPlot(plot);
@@ -291,6 +318,7 @@ function findChartTargets() {
       root: chart.root,
       plot: chart.plot,
       anchor: chart.anchor,
+      section,
       sectionType: type,
     });
   }
@@ -309,6 +337,7 @@ function findChartTargets() {
       root,
       plot: plotRect,
       anchor: findPanelAnchor(plotRect, root),
+      section: findSectionForPlot(plotRect),
       sectionType: inferred,
     });
   }
@@ -328,6 +357,7 @@ function findChartTargets() {
             root: container,
             plot: canvas,
             anchor: findPanelAnchor(canvas, container),
+            section: findSectionForPlot(canvas),
             sectionType: inferred,
           });
           break;
@@ -605,15 +635,93 @@ function mapColorsByHorizontalPosition(container, game, palette) {
   };
 }
 
+function findOverUnderLabelColors(container) {
+  const over = [];
+  const under = [];
+
+  for (const el of container.querySelectorAll("span, p, div, text, tspan")) {
+    const text = el.textContent?.trim() || "";
+    if (!text || text.length > 80) continue;
+
+    const color = getReadableColor(el);
+    if (!color) continue;
+
+    const entry = {
+      color,
+      hasPercent: /\d+\.?\d*\s*%/.test(text),
+      len: text.length,
+    };
+
+    if (/\bOver\b/i.test(text)) over.push(entry);
+    else if (/\bUnder\b/i.test(text)) under.push(entry);
+  }
+
+  return {
+    over: pickBestColorCandidate(over),
+    under: pickBestColorCandidate(under),
+  };
+}
+
+function findSvgLineColorsByPosition(chartRoot) {
+  const svgs = new Set();
+  let node = chartRoot;
+  for (let i = 0; i < 6 && node; i++) {
+    node.querySelectorAll("svg").forEach((svg) => svgs.add(svg));
+    node = node.parentElement;
+  }
+
+  const byColor = new Map();
+  for (const svg of svgs) {
+    const svgRect = svg.getBoundingClientRect();
+    for (const el of svg.querySelectorAll("path, line, polyline")) {
+      const stroke = el.getAttribute("stroke") || getComputedStyle(el).stroke;
+      const width = parseFloat(el.getAttribute("stroke-width") || "0");
+      if (!stroke || stroke === "none" || width < 1.2) continue;
+      const hex = cssColorToHex(stroke);
+      if (!hex || isNeutralChartColor(hex)) continue;
+
+      const r = el.getBoundingClientRect();
+      const y = r.height > 0 ? r.top + r.height / 2 : svgRect.top + svgRect.height / 2;
+      const bucket = byColor.get(hex) || { color: hex, ySum: 0, n: 0 };
+      bucket.ySum += y;
+      bucket.n += 1;
+      byColor.set(hex, bucket);
+    }
+  }
+
+  const ranked = [...byColor.values()]
+    .map((b) => ({ color: b.color, y: b.ySum / b.n }))
+    .sort((a, b) => a.y - b.y);
+
+  if (ranked.length < 2) return null;
+  return { top: ranked[0].color, bottom: ranked[ranked.length - 1].color };
+}
+
 /** Read Polymarket chart line colors so markers/table match the graph */
-function extractChartTeamColors(chartRoot, game) {
+function extractChartTeamColors(chartRoot, game, chartType = "main") {
   let container = chartRoot;
   for (let i = 0; i < 5 && container.parentElement; i++) {
     container = container.parentElement;
   }
 
-  const labels = findTeamLabelColors(container, game);
   const strokes = findSvgLineColors(chartRoot);
+  const byPos = findSvgLineColorsByPosition(chartRoot);
+
+  if (chartType === "total") {
+    const ou = findOverUnderLabelColors(container);
+    const away = byPos?.top || strokes[0] || ou.over;
+    const home =
+      byPos?.bottom ||
+      strokes.find((c) => c !== away) ||
+      strokes[1] ||
+      ou.under;
+    return {
+      away: away || teamUIColor(game.away.abbr),
+      home: home || teamUIColor(game.home.abbr),
+    };
+  }
+
+  const labels = findTeamLabelColors(container, game);
   const result = { away: labels.away, home: labels.home };
 
   if (!result.away || !result.home) {
@@ -639,6 +747,35 @@ function extractChartTeamColors(chartRoot, game) {
   };
 }
 
+function isChartPlotVisible(plot, chartRoot, section = null) {
+  if (!plot?.isConnected) return false;
+
+  const r = plot.getBoundingClientRect();
+  if (r.width < 80 || r.height < 40) return false;
+
+  if (chartRoot?.isConnected) {
+    const cr = chartRoot.getBoundingClientRect();
+    if (cr.width < 80 || cr.height < 50) return false;
+  }
+
+  // Collapsed accordion: section shrinks to header-only (not scroll position)
+  if (section?.isConnected) {
+    const sr = section.getBoundingClientRect();
+    if (sr.height < 100) return false;
+  }
+
+  let node = plot;
+  for (let i = 0; i < 25 && node; i++) {
+    const style = getComputedStyle(node);
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (parseFloat(style.opacity) === 0) return false;
+    if (style.maxHeight === "0px" || style.height === "0px") return false;
+    node = node.parentElement;
+  }
+
+  return true;
+}
+
 function isOverlayAlive(chartRoot) {
   return isChartAttached(chartRoot);
 }
@@ -651,6 +788,8 @@ window.PolyScoreChart = {
   plotPositionKey,
   plotStableKey,
   detectChartTypeFromPlot,
+  findPanelInsertAfter,
+  findSectionForPlot,
   findChartsInElement,
   getCanvas,
   getPlotArea,
@@ -664,6 +803,7 @@ window.PolyScoreChart = {
   isOverlayAlive,
   invalidateChartCache,
   extractChartTeamColors,
+  isChartPlotVisible,
 };
 
 Object.assign(window, {
@@ -672,6 +812,8 @@ Object.assign(window, {
   plotPositionKey,
   plotStableKey,
   detectChartTypeFromPlot,
+  findPanelInsertAfter,
+  findSectionForPlot,
   findChartsInElement,
   getCanvas,
   getPlotArea,
@@ -686,5 +828,6 @@ Object.assign(window, {
   isOverlayAlive,
   invalidateChartCache,
   extractChartTeamColors,
+  isChartPlotVisible,
   PROCESSED_ATTR,
 });

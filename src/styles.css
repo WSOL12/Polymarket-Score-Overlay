@@ -18,9 +18,11 @@
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   margin-top: 0;
   padding-top: 12px;
+  padding-bottom: 16px;
   border-top: 1px solid var(--ps-border);
   z-index: 50;
   position: relative;
+  overflow: visible;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -256,7 +258,7 @@
   background: transparent;
   border: none;
   border-radius: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .ps-panel-toggle {
@@ -365,29 +367,27 @@
 
 /* Timeline table */
 .ps-panel-body {
-  overflow: hidden;
+  overflow: visible;
+  max-height: none;
+  opacity: 1;
   transition: max-height 0.28s ease, opacity 0.2s ease;
 }
 
 .ps-panel-body.ps-collapsed {
   max-height: 0;
   opacity: 0;
+  overflow: hidden;
 }
 
 .ps-timeline-scroll {
-  overflow-y: scroll;
-  overflow-x: hidden;
-  max-height: 220px;
-  padding-right: 6px;
+  overflow: visible;
+  max-height: none;
+  padding-right: 0;
   margin-right: 0;
-  scrollbar-gutter: stable;
-  overscroll-behavior: contain;
-  scrollbar-width: auto;
-  scrollbar-color: rgba(255, 255, 255, 0.4) rgba(255, 255, 255, 0.08);
 }
 
 .ps-timeline-rows {
-  padding-right: 8px;
+  padding-right: 0;
 }
 
 .ps-timeline-header,
@@ -455,9 +455,9 @@
   font-size: 13px;
   font-weight: 400;
   line-height: 1.4;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 /* List page — slightly compact */
@@ -466,36 +466,13 @@
 }
 
 .poly-score-root.ps-compact .ps-timeline-scroll {
-  max-height: 160px;
+  max-height: none;
 }
 
-/* Scrollbar — visible draggable thumb on the right */
+/* Timeline table — full height, no inner scroll */
+
 .ps-timeline-scroll::-webkit-scrollbar {
-  width: 14px;
-}
-
-.ps-timeline-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.07);
-  border-radius: 7px;
-  margin: 4px 2px;
-}
-
-.ps-timeline-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.32);
-  border-radius: 7px;
-  border: 3px solid transparent;
-  background-clip: padding-box;
-  min-height: 48px;
-}
-
-.ps-timeline-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.42);
-  background-clip: padding-box;
-}
-
-.ps-timeline-scroll::-webkit-scrollbar-thumb:active {
-  background: rgba(255, 255, 255, 0.55);
-  background-clip: padding-box;
+  display: none;
 }
 
 /* Entry animation */

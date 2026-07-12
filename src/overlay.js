@@ -73,14 +73,77 @@ function getSectionPanel(slugKey, chartType) {
   );
 }
 
-function placePanel(panel, anchor) {
-  if (!panel || !anchor) return;
-  if (panel.previousElementSibling === anchor) return;
-  anchor.insertAdjacentElement("afterend", panel);
+function placePanel(panel, anchor, section) {
+  const insertAfter = findPanelInsertAfter(anchor, section);
+  if (!panel || !insertAfter?.isConnected) return;
+  if (panel.previousElementSibling === insertAfter) return;
+  insertAfter.insertAdjacentElement("afterend", panel);
 }
 
 function teamDisplayName(team) {
   return TEAM_NAMES[team.abbr] || team.name || team.abbr.toUpperCase();
+}
+
+function updatePanelColors(panel, chartColors, timeline) {
+  const { game, events } = timeline;
+  const awayColor = chartColors?.away || teamUIColor(game.away.abbr);
+  const homeColor = chartColors?.home || teamUIColor(game.home.abbr);
+
+  const teamNames = panel.querySelectorAll(".ps-team-name");
+  if (teamNames[0]) teamNames[0].style.setProperty("--team-color", awayColor);
+  if (teamNames[1]) teamNames[1].style.setProperty("--team-color", homeColor);
+
+  panel.querySelectorAll(".ps-timeline-row").forEach((row, idx) => {
+    const ev = events[idx];
+    if (!ev) return;
+    const isTop = ev.halfLabel === "Top";
+    const pill = row.querySelector(".ps-inning-pill");
+    if (pill) pill.setAttribute("style", inningPillStyle(isTop ? awayColor : homeColor));
+  });
+}
+
+function syncPanelVisibility() {
+  const targets = findChartTargets?.() || [];
+  const visibleByType = new Map();
+
+  for (const target of targets) {
+    const type = target.sectionType || "main";
+    visibleByType.set(
+      type,
+      isChartPlotVisible(target.plot, target.root, target.section)
+    );
+  }
+
+  document.querySelectorAll(`.${OVERLAY_CLASS}[data-chart-type]`).forEach((panel) => {
+    const type = panel.dataset.chartType || "main";
+    const visible = visibleByType.has(type) ? visibleByType.get(type) : false;
+    panel.style.display = visible ? "" : "none";
+  });
+
+  for (const [, data] of attached) {
+    const visible = visibleByType.has(data.chartType)
+      ? visibleByType.get(data.chartType)
+      : isChartPlotVisible(data.plot, data.chartRoot, data.section);
+
+    if (data.panel?.isConnected) {
+      data.panel.style.display = visible ? "" : "none";
+    }
+
+    if (data.markers?.isConnected) {
+      data.markers._sectionHidden = !visible;
+    }
+
+    if (!data.markers?.isConnected) continue;
+
+    if (!visible) {
+      data.markers.style.display = "none";
+    } else {
+      layoutMarkers(data.chartRoot, data.markers, {
+        plot: data.plot,
+        section: data.section,
+      });
+    }
+  }
 }
 
 function buildPanel(timeline, chartColors) {
@@ -242,6 +305,11 @@ function layoutMarkers(chartRoot, markersLayer, options = {}) {
     return;
   }
 
+  if (markersLayer._sectionHidden) {
+    markersLayer.style.display = "none";
+    return;
+  }
+
   markersLayer.style.display = "block";
   markersLayer.style.position = "fixed";
   markersLayer.style.top = `${plotR.top}px`;
@@ -261,9 +329,15 @@ function layoutAllMarkers(refreshAxis = false) {
       layoutMarkers(data.chartRoot, data.markers, {
         refreshAxis,
         plot: data.plot,
+        section: data.section,
       });
     }
   }
+}
+
+function relayoutAllMarkers(refreshAxis = false) {
+  syncPanelVisibility();
+  layoutAllMarkers(refreshAxis);
 }
 
 function debounce(fn, ms) {
@@ -412,16 +486,19 @@ async function attachToChart(chartRoot, timeline, options = {}) {
     alignment.plot = plot;
     alignment.layoutEl = plot;
 
-    const chartColors = extractChartTeamColors(chartRoot, timeline.game);
+    const anchor = options.anchor || chartRoot;
+    const section = options.section || null;
+
+    const chartColors = extractChartTeamColors(chartRoot, timeline.game, chartType);
     const markers = buildMarkersLayer(timeline, alignment, chartColors);
     markers._plotKey = stableKey;
     markers._plot = plot;
     markers._chartRoot = chartRoot;
+    markers._section = section;
     document.body.appendChild(markers);
     ensureGlobalListeners();
 
     let panel = null;
-    const anchor = options.anchor || chartRoot;
 
     if (options.showPanel) {
       const panelKey = panelKeyFor(options.slugKey, chartRoot, plot, chartType);
@@ -432,21 +509,31 @@ async function attachToChart(chartRoot, timeline, options = {}) {
         panel.dataset.slugKey = options.slugKey;
         panel.dataset.panelKey = panelKey;
         panel.dataset.chartType = chartType;
+      } else {
+        updatePanelColors(panel, chartColors, timeline);
       }
 
       pagePanels.set(panelKey, panel);
-      placePanel(panel, anchor);
+      placePanel(panel, anchor, section);
     }
 
-    layoutMarkers(chartRoot, markers, { refreshAxis: true, plot });
-    attached.set(stableKey, { markers, panel, chartRoot, plot, chartType });
+    layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section });
+    attached.set(stableKey, {
+      markers,
+      panel,
+      chartRoot,
+      plot,
+      chartType,
+      section,
+    });
+    syncPanelVisibility();
 
     setTimeout(
-      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot }),
+      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section }),
       800
     );
     setTimeout(
-      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot }),
+      () => layoutMarkers(chartRoot, markers, { refreshAxis: true, plot, section }),
       2500
     );
   } finally {
@@ -455,12 +542,14 @@ async function attachToChart(chartRoot, timeline, options = {}) {
 }
 
 window.relayoutMarkers = () => {
-  layoutAllMarkers(true);
-  setTimeout(() => layoutAllMarkers(true), 400);
-  setTimeout(() => layoutAllMarkers(true), 1200);
-  setTimeout(() => layoutAllMarkers(true), 2200);
+  relayoutAllMarkers(true);
+  setTimeout(() => relayoutAllMarkers(true), 400);
+  setTimeout(() => relayoutAllMarkers(true), 1200);
+  setTimeout(() => relayoutAllMarkers(true), 2200);
 };
 window.layoutAllMarkers = layoutAllMarkers;
+window.relayoutAllMarkers = relayoutAllMarkers;
+window.syncPanelVisibility = syncPanelVisibility;
 window.PolyScoreOverlay = { attachToChart, detachChart, pickPrimaryChart };
 window.attachToChart = attachToChart;
 window.cleanupOrphans = cleanupOrphans;
